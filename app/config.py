@@ -43,7 +43,14 @@ SCOPES_SECONDARY = [
 GOOGLE_PICKER_API_KEY = os.environ.get("GOOGLE_PICKER_API_KEY", "")
 
 MAX_DRIVES_PER_USER = int(os.environ.get("MAX_DRIVES_PER_USER", 10))
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))
+# Deliberately conservative default: this app targets free-tier hosting
+# (e.g. Render's 512MB RAM limit), and each concurrent upload/download
+# can hold several times its own file size in memory at once (read into
+# memory, sliced for chunking, then buffered again for the HTTP request).
+# 10 concurrent big-file transfers on 512MB is a real way to get
+# OOM-killed. Raise this via env var if you deploy somewhere with more
+# RAM and want faster multi-file uploads.
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 4))
 # Generous timeout since a chunk upload/download can legitimately take a
 # while on a slow connection -- this exists to fail clearly instead of
 # hanging forever if something actually goes wrong on the wire.

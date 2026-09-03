@@ -169,10 +169,16 @@ PYTHONPATH=. python -m pytest tests/ -q
 
 ## Known limitations / good next enhancements
 
-- Uploaded file bytes are held in memory during a request. Render's free
-  tier has ~512MB RAM, so very large files (multi-GB) would need
-  streaming chunked upload instead of the current buffer-then-split
-  approach — say the word and I'll add that.
+- Uploaded file bytes are held in memory during a request rather than
+  streamed. On Render's free tier (512MB RAM), this can OOM-kill the
+  instance with either large files or several files uploading at once
+  — this has actually happened in testing. `MAX_WORKERS` defaults to a
+  conservative `4` specifically because of this (down from `10`); lower
+  it further via env var if you still see out-of-memory restarts in
+  Render's Events tab, or raise it if you deploy somewhere with more RAM.
+  A proper fix (streaming straight from the upload into Drive's
+  resumable-upload API, so peak memory stops scaling with file size at
+  all) is a real, scoped piece of work — say the word and I'll build it.
 - No file versioning yet — re-uploading the same name overwrites the
   index entry (the old Drive object becomes orphaned rather than reused).
 - "Existing user" recognition is per-browser-session (a cookie), not a

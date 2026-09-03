@@ -84,8 +84,13 @@ def upload_many(clients: dict[str, DriveClient], payloads: list[tuple[str, bytes
 
     def do_task(task):
         filename, data, acct, offset, chunk_size = task
-        chunk_bytes = data[offset:offset + chunk_size]
         is_split = len(file_plans[filename]) > 1
+        # Avoid a redundant full-size copy for the common case (a file
+        # that fits on one drive, unsplit): reuse the original bytes
+        # object instead of slicing an identical duplicate of it. This
+        # matters a lot on memory-constrained hosts -- see MAX_WORKERS
+        # in config.py for the other half of this tradeoff.
+        chunk_bytes = data[offset:offset + chunk_size] if is_split else data
         chunk_name = f"{filename}.part{offset}" if is_split else filename
         # fresh_copy(): two chunks from different files can land on the
         # same drive and run concurrently -- each needs its own connection.

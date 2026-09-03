@@ -96,6 +96,36 @@ def test_upload_many_task_flattening_logic():
     assert total_big == 1500
 
 
+def test_upload_many_avoids_redundant_copy_for_unsplit_files():
+    """Memory-usage regression check: an unsplit file (the common case)
+    must be handed to upload_bytes as the SAME bytes object read from the
+    request, not a freshly-sliced duplicate of identical content -- that
+    duplicate is exactly the kind of extra buffer that contributed to the
+    reported Render OOM kill."""
+    seen_chunk_bytes = {}
+
+    class RecordingFakeClient:
+        def fresh_copy(self):
+            return self
+
+        def upload_bytes(self, name, data):
+            seen_chunk_bytes[name] = data
+            return f"fake-id-{name}"
+
+        def get_free_space(self):
+            return 10**9  # plenty of room, so nothing gets split
+
+    original_bytes = b"x" * 500
+    clients = {"drive-a": RecordingFakeClient()}
+    result = distributor.upload_many(clients, [("photo.jpg", original_bytes)])
+
+    assert len(result["photo.jpg"]) == 1
+    uploaded_bytes = seen_chunk_bytes["photo.jpg"]
+    assert uploaded_bytes == original_bytes
+    # The key assertion: it's the SAME object, not an equal-but-separate copy.
+    assert uploaded_bytes is original_bytes
+
+
 if __name__ == "__main__":
     import sys
     import traceback
