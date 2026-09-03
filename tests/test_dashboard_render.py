@@ -130,5 +130,17 @@ def test_static_css_is_served():
     assert "gauge-fill" in resp.text
 
 
+def test_favicon_files_are_served():
+    tc = TestClient(app=main.app)
+    for path, content_type in [
+        ("/static/favicon.svg", "image/svg+xml"),
+        ("/static/favicon.png", "image/png"),
+        ("/static/apple-touch-icon.png", "image/png"),
+    ]:
+        resp = tc.get(path)
+        assert resp.status_code == 200, path
+        assert content_type.split("/")[0] in resp.headers["content-type"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

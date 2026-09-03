@@ -31,20 +31,41 @@ full path as a literal filename rather than real nested folders.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 from .crypto import decrypt, encrypt
 from .drive_client import DriveClient
+
+logger = logging.getLogger(__name__)
 
 EMPTY_VAULT = {"accounts": {}, "folders": [], "files": {}, "oauth_client": None}
 
 
 def load_vault(primary_client: DriveClient) -> dict:
     raw = primary_client.read_vault_raw()
-    if raw is None:
+    v = None
+    if raw is not None:
+        try:
+            v = json.loads(decrypt(raw))
+        except Exception:
+            # Most commonly means this vault was encrypted under a
+            # different SECRET_KEY than the server is running with now --
+            # e.g. testing locally and against a deployed instance with
+            # the same Google account, or a key rotation. There's no way
+            # to recover the old index without the old key, so rather
+            # than crash, start fresh: the user's actual Drive files are
+            # untouched, only our tracking of them resets, and saving
+            # again immediately self-heals for every future login.
+            logger.warning(
+                "Could not decrypt existing vault -- starting a fresh one. "
+                "This usually means SECRET_KEY changed since this vault "
+                "was last saved.",
+                exc_info=True,
+            )
+            v = None
+    if v is None:
         v = json.loads(json.dumps(EMPTY_VAULT))  # deep copy
-    else:
-        v = json.loads(decrypt(raw))
     v.setdefault("folders", [])  # migrates vaults saved before folders existed
     v.setdefault("oauth_client", None)  # migrates vaults saved before per-user OAuth apps
     return v
