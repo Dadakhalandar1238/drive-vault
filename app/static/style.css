@@ -175,19 +175,6 @@ td.actions { display: flex; gap: 8px; justify-content: flex-end; }
 td.actions .btn { padding: 6px 14px; font-size: 0.78rem; }
 .empty-row { color: var(--text-dim); text-align: center; padding: 24px 0; }
 
-/* ---------- login page ---------- */
-.login-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 40px 36px;
-  max-width: 400px;
-  text-align: center;
-}
-.login-card h1 { font-size: 1.5rem; margin: 18px 0 8px; }
-.login-card p { color: var(--text-dim); font-size: 0.9rem; margin: 0 0 24px; }
-.login-icon { color: var(--teal); }
-
 @media (max-width: 560px) {
   .topbar { flex-direction: column; align-items: flex-start; gap: 10px; }
   .pool-figure .num { font-size: 2rem; }
@@ -283,6 +270,99 @@ td.actions .btn { padding: 6px 14px; font-size: 0.78rem; }
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* ---------- welcome / onboarding page ---------- */
+.wrap.narrow { max-width: 700px; }
+.hero { text-align: center; margin-bottom: 28px; }
+.hero .login-icon { color: var(--teal); }
+.hero h1 { margin: 12px 0 6px; font-size: 1.7rem; }
+.hero-sub { color: var(--text-dim); font-size: 0.9rem; margin: 0; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 22px 24px;
+  margin-bottom: 18px;
+}
+.card .section-title { margin-top: 0; }
+.muted-p { color: var(--text-dim); font-size: 0.88rem; line-height: 1.6; margin: 6px 0 0; }
+
+.banner {
+  border-radius: 10px;
+  padding: 14px 18px;
+  font-size: 0.88rem;
+  margin-bottom: 18px;
+}
+.banner-error { background: rgba(239, 100, 98, 0.12); border: 1px solid var(--coral); color: #ffd4d3; }
+
+.security-callout { display: flex; gap: 14px; align-items: flex-start; border-color: var(--teal); }
+.security-callout svg { color: var(--teal); flex-shrink: 0; margin-top: 2px; }
+.security-callout strong { display: block; margin-bottom: 6px; font-size: 0.95rem; }
+.security-callout p { color: var(--text-dim); font-size: 0.87rem; line-height: 1.6; margin: 0; }
+
+.toggle-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+.toggle-chevron { color: var(--text-dim); font-size: 0.7rem; }
+
+.steps { margin: 16px 0 12px; padding-left: 22px; color: var(--text); font-size: 0.9rem; line-height: 1.7; }
+.steps li { margin-bottom: 16px; }
+.steps ul { margin: 8px 0; padding-left: 20px; color: var(--text-dim); font-size: 0.87rem; }
+.steps ul li { margin-bottom: 8px; }
+.steps a { color: var(--teal); }
+
+.code-block {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 6px 0;
+  font-size: 0.82rem;
+  color: var(--teal);
+  word-break: break-all;
+}
+.code-block code { display: block; }
+.code-block.copyable { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.code-block.copyable code { flex: 1; }
+.copy-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.76rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.copy-btn:hover { border-color: var(--teal); color: var(--teal); }
+
+.setup-form { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
+.setup-form label { font-size: 0.85rem; color: var(--text-dim); display: flex; flex-direction: column; gap: 6px; }
+.setup-form input[type="email"], .setup-form input[type="text"], .setup-form input[type="password"] {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+.setup-form input:focus { outline: none; border-color: var(--teal); }
+.password-row { display: flex; gap: 8px; }
+.password-row input { flex: 1; }
+.setup-form .btn { margin-top: 6px; align-self: flex-start; }
 
 /* ---------- inline button loading state ---------- */
 .spinner {

@@ -20,9 +20,11 @@ VAULT_FILENAME = "vault.enc"
 
 
 class DriveClient:
-    def __init__(self, refresh_token: str, scopes: list[str], account_key: str | None = None):
+    def __init__(self, refresh_token: str, scopes: list[str], client_id: str, client_secret: str, account_key: str | None = None):
         self.refresh_token = refresh_token
         self.scopes = scopes
+        self.client_id = client_id
+        self.client_secret = client_secret
         # account_key (the Google account's own "sub") is how this client
         # finds and updates its cached access token -- see token_cache.py.
         # It's optional so ad-hoc/test clients still work without one.
@@ -34,8 +36,8 @@ class DriveClient:
             token=access_token,
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=config.GOOGLE_CLIENT_ID,
-            client_secret=config.GOOGLE_CLIENT_SECRET,
+            client_id=client_id,
+            client_secret=client_secret,
             scopes=scopes,
             expiry=expiry,
         )
@@ -59,7 +61,7 @@ class DriveClient:
         whatever's currently cached for this account, so if a sibling
         already refreshed the token, this copy reuses it instead of
         refreshing again."""
-        return DriveClient(self.refresh_token, self.scopes, account_key=self.account_key)
+        return DriveClient(self.refresh_token, self.scopes, self.client_id, self.client_secret, account_key=self.account_key)
 
     def _touch_cache(self) -> None:
         """Called after every real Drive API call so the next DriveClient

@@ -1,23 +1,20 @@
 """
 All configuration comes from environment variables so the app stays
 stateless and works identically on localhost, Render, Cloud Run, etc.
+
+Notably absent: any Google OAuth Client ID/Secret. This app does not have
+one of its own -- every user brings their own Google Cloud project when
+they sign in (see the welcome page / onboarding flow), and it's never
+persisted here. This file only holds things that are genuinely safe to
+share across every visitor to this deployment.
 """
 from __future__ import annotations
 
 import os
 
-GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
-GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
-
-# Must exactly match an "Authorized redirect URI" configured in the
-# Google Cloud OAuth client, e.g. https://your-app.onrender.com/oauth/callback
-REDIRECT_URI = os.environ["REDIRECT_URI"]
-SECONDARY_REDIRECT_URI = os.environ.get(
-    "SECONDARY_REDIRECT_URI", REDIRECT_URI.replace("/oauth/callback", "/oauth/callback/secondary")
-)
-
-# Random 32+ byte secret used to sign session cookies and encrypt
-# refresh tokens. Generate with:
+# Random 32+ byte secret used to sign/encrypt session cookies. This is
+# the only "credential" this deployment itself holds, and it never
+# grants access to anyone's Drive by itself. Generate with:
 #   python -c "import secrets; print(secrets.token_urlsafe(32))"
 SECRET_KEY = os.environ["SECRET_KEY"]
 
@@ -39,10 +36,10 @@ SCOPES_SECONDARY = [
 ]
 
 # Optional: only needed for the "Import from Drive" (Google Picker)
-# feature. Without it, that button is simply hidden -- everything else
-# works exactly as before. Get one from Google Cloud Console -> APIs &
-# Services -> Credentials -> Create Credentials -> API key, then restrict
-# it to the Google Picker API and your deployed domain.
+# feature. This one IS shared across visitors deliberately -- unlike the
+# OAuth Client ID/Secret, a Picker API key doesn't grant access to
+# anyone's files by itself, it just identifies API traffic for quota
+# purposes. Without it, the Import button is simply hidden.
 GOOGLE_PICKER_API_KEY = os.environ.get("GOOGLE_PICKER_API_KEY", "")
 
 MAX_DRIVES_PER_USER = int(os.environ.get("MAX_DRIVES_PER_USER", 10))
@@ -53,3 +50,4 @@ MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))
 DRIVE_REQUEST_TIMEOUT = int(os.environ.get("DRIVE_REQUEST_TIMEOUT", 300))
 SESSION_COOKIE_NAME = "dv_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+PENDING_SETUP_COOKIE_NAME = "dv_pending_setup"

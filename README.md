@@ -3,8 +3,15 @@
 Turns several Google Drive accounts into one storage pool. No database —
 every user's connected accounts and file index live encrypted inside their
 own primary Drive (in the hidden `appDataFolder`). Multi-user by design:
-anyone can sign in with their own Google account and connect up to 10 of
-their own drives; nothing is ever shared between users.
+anyone can sign in and connect up to 10 of their own drives; nothing is
+ever shared between users.
+
+**Nobody shares Google credentials.** This app has no Google API access
+of its own. Each person who signs in brings their own free Google Cloud
+project (their own Client ID/Secret) through a guided setup screen built
+into the app — the person deploying this doesn't need a Google Cloud
+project at all, and nobody's Client ID or Secret is ever stored on the
+server. See "How credentials are handled" below for exactly what that means.
 
 **How it decides where files go:** on upload, it checks free space on all
 your connected drives in parallel, then puts the file on whichever has the
@@ -14,55 +21,74 @@ concurrently. Downloads fetch all chunks in parallel and reassemble them.
 
 ---
 
-## 1. Google Cloud setup (one-time, ~10 minutes)
+## Deploy to Render (free, no credit card)
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com), create a project.
-2. **APIs & Services → Library** → enable **Google Drive API**.
-3. **APIs & Services → OAuth consent screen**:
-   - User type: **External**
-   - Scopes: add `.../auth/drive.file` and `.../auth/drive.appdata`
-   - Leave the app in **Testing** mode for personal/small-group use (see note below) or publish it if you want it fully public.
-4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**:
-   - Application type: **Web application**
-   - Authorized redirect URIs — add both (use `http://localhost:8000/...` for now, you'll add the real deployed URLs after step 2):
-     ```
-     http://localhost:8000/oauth/callback
-     http://localhost:8000/oauth/callback/secondary
-     ```
-   - Save the **Client ID** and **Client Secret**.
-
-> **About "Testing" mode:** an unverified app can have up to 100 users, but
-> each of them will see a "Google hasn't verified this app" warning screen
-> before continuing — that's just how Google treats any OAuth app that
-> hasn't gone through their (free, but multi-day) verification review. For
-> just yourself and friends, click through it once; it's harmless. If you
-> want a fully public app with no warning, you'd submit for verification
-> later — no code changes needed.
-
-## 2. Deploy to Render (free, no credit card)
+There is nothing Google-related to configure before deploying — that
+happens per-user, in the app itself, after it's live.
 
 1. Push this folder to a GitHub repo.
-2. Go to [render.com](https://render.com) → sign up (email only, no card) → **New → Blueprint** → connect your repo. Render will read `render.yaml` automatically.
-3. When prompted for environment variables, fill in:
-   - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — from step 1
-   - `REDIRECT_URI` — `https://<your-service-name>.onrender.com/oauth/callback`
-   - `SECRET_KEY` — Render can auto-generate this (already configured in `render.yaml`)
-4. Deploy. Once live, go back to the Google Cloud Console credentials page and add your real Render URLs as authorized redirect URIs:
-   ```
-   https://<your-service-name>.onrender.com/oauth/callback
-   https://<your-service-name>.onrender.com/oauth/callback/secondary
-   ```
+2. Go to [render.com](https://render.com) → sign up (email only, no card) → **New → Blueprint** → connect your repo. Render reads `render.yaml` automatically and generates `SECRET_KEY` for you.
+3. Deploy. That's it — the only required environment variable is `SECRET_KEY`, and the blueprint already generates one.
 
-That's it — the service is free forever on Render's free web tier (it does
-spin down after ~15 minutes of no traffic and takes ~30–50s to wake back
-up on the next request; fine for a personal tool).
+The service is free forever on Render's free web tier (it spins down
+after ~15 minutes of no traffic and takes ~30–50s to wake back up on the
+next request; fine for a personal tool).
 
-## 3. Using it
+## Using it (what each person sees)
 
-- Visit your URL → **Sign in with Google** (this becomes your primary account/identity).
-- On the dashboard, click **Connect another drive** to add up to 9 more Google accounts. Google will show an account picker each time.
-- Drag files into the upload form — they're distributed across your drives automatically.
-- Download/delete from the file table; both work no matter which drive(s) a file actually lives on.
+1. Visit your deployed URL. If you're new, you'll land on a setup screen
+   with a step-by-step guide to creating a free Google Cloud project and
+   getting a Client ID/Secret — the exact redirect URIs to paste in are
+   shown for you, computed from your actual deployed URL, so there's no
+   guessing. Takes about 10 minutes, once.
+2. Paste your Client ID and Secret into the form and continue — this
+   kicks off Google's normal sign-in screen, using *your own* OAuth app.
+3. From then on, that's your identity. Anyone who already has a signed-in
+   session in their browser skips straight to the dashboard; if that
+   session ever expires, signing in again just means re-entering the same
+   Client ID/Secret you set up before (treat it like a password — save it
+   somewhere, e.g. a password manager).
+4. On the dashboard, **Connect another drive** adds up to 9 more Google
+   accounts — using the *same* Client ID/Secret you already entered, since
+   one small Google Cloud project can authorize as many of your own
+   accounts as you like.
+5. Drag files into the upload form — they're distributed across your
+   drives automatically.
+6. **Folders**: click **+ New folder** to create one, click into it to
+   navigate, and anything you upload while inside a folder lands there.
+   Folders are a purely virtual/app-level concept — see the architecture
+   notes below for what that means in practice.
+7. **Multi-delete**: check the boxes next to files and click **Delete
+   selected** to remove several at once.
+8. **Import from Drive**: if the deployer set up `GOOGLE_PICKER_API_KEY`,
+   this button opens Google's own file browser so you can pull in files
+   that already exist in any of your Google accounts (not just files this
+   app created).
+9. Download/delete from the file table; both work no matter which
+   drive(s) a file actually lives on.
+
+## How credentials are handled (read this if you're not sure it's safe)
+
+- **The server never stores your Client ID/Secret anywhere at rest.**
+  There's no database, and nothing is written to the server's disk. Your
+  credentials exist in exactly two places: an encrypted, signed cookie in
+  your own browser (so you don't have to retype them every visit), and an
+  encrypted blob inside your own Google Drive's hidden `appDataFolder`
+  (so a copy survives even if you clear cookies — restoring it still
+  requires you to re-enter your Client ID/Secret once, since reading your
+  Drive requires being authenticated to it first).
+- While you're mid-setup (after submitting the form, before Google
+  redirects you back), your credentials sit briefly in a short-lived
+  cookie that expires after 15 minutes and is deleted the moment setup
+  finishes.
+- Every sensitive value — refresh tokens, your Client Secret — is
+  encrypted (via `SECRET_KEY`) before it's ever written into a cookie or
+  the vault. Signing alone (which the app also does, to detect tampering)
+  wouldn't stop someone from reading the value; encryption does.
+- The one thing that's genuinely global to this deployment is
+  `SECRET_KEY` itself, which the person running the server controls. It's
+  used only to encrypt/sign cookies and vault contents — it can't be used
+  to access anyone's Drive by itself.
 
 ---
 
@@ -71,22 +97,35 @@ up on the next request; fine for a personal tool).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in your values
+cp .env.example .env   # only SECRET_KEY is required; generate one with:
+                        #   python -c "import secrets; print(secrets.token_urlsafe(32))"
 export $(grep -v '^#' .env | xargs)
 uvicorn app.main:app --reload
 ```
 
-Run the offline logic tests (no Google credentials needed):
+Visit `http://localhost:8000` and follow the in-app setup guide the same
+way a deployed user would — the redirect URIs it shows you will correctly
+say `http://localhost:8000/...`.
+
+Run the offline tests (no Google credentials or network needed):
 ```bash
-PYTHONPATH=. python tests/test_logic.py
+PYTHONPATH=. python -m pytest tests/ -q
 ```
 
 ## Architecture notes
 
-- **No database, anywhere.** Each user's vault (connected-drive tokens +
-  file index) is an encrypted JSON blob stored in their own primary
-  account's `appDataFolder` — invisible in their normal Drive UI, and
-  readable only by this app.
+- **No database, anywhere.** Each user's vault (connected-drive tokens,
+  their own OAuth Client ID/Secret backup, and file index) is an
+  encrypted JSON blob stored in their own primary account's
+  `appDataFolder` — invisible in their normal Drive UI, and readable only
+  by this app.
+- **Bring-your-own OAuth app.** Every user supplies their own Google
+  Cloud Client ID/Secret through a guided setup flow. A short-lived
+  encrypted cookie carries those credentials through the OAuth redirect
+  round trip; the resulting session cookie carries them for as long as
+  the session lasts. `DriveClient`, `auth.build_flow`, and every route
+  take client_id/client_secret as explicit parameters — there is no
+  global config value to fall back to, by design.
 - **Stateless server.** Login sessions are a signed, encrypted cookie —
   not a server-side session. Any instance can serve any request, which is
   exactly what a free tier that spins containers up/down wants.
@@ -98,6 +137,35 @@ PYTHONPATH=. python tests/test_logic.py
   `ThreadPoolExecutor` gives real parallelism despite Python's GIL —
   used for free-space checks across all drives, and for uploading/
   downloading every chunk of every file in a batch simultaneously.
+  Google's client library is explicitly not thread-safe at the
+  connection level, so every concurrent call gets its own independent
+  connection (`DriveClient.fresh_copy()`) rather than sharing one.
+- **Access-token caching.** Each connected account's short-lived access
+  token is cached in memory (keyed by the account's own Google id) across
+  requests, so repeat requests within the token's ~1 hour lifetime skip
+  re-authenticating with Google entirely. This is why folder navigation
+  and file operations feel fast after the first request in a session.
+- **Folders are virtual, not real Drive folders.** A given folder's files
+  are usually scattered across several physical drives (that's the whole
+  point of the pooling), so there's no single real Drive folder to mirror
+  them into. Instead, a folder is just a path prefix tracked in the
+  vault's own metadata. One visible side effect: if you open a file
+  directly in its actual Google Drive account, its name there is the full
+  virtual path (e.g. `docs/receipts/jan.pdf`) rather than a real nested
+  folder — a bit unusual to look at, but functionally harmless.
+- **Importing existing files uses Google Picker, not a broader scope.**
+  `drive.readonly` and even `drive.metadata.readonly` are classified by
+  Google as *restricted* scopes requiring an annual paid security
+  assessment — not worth it for this app. Instead, "Import from Drive"
+  loads Google's own Picker widget client-side; whatever the user selects
+  there is downloaded directly by the browser (using a short-lived token
+  scoped only to `drive.file`) and then fed into the normal upload
+  pipeline. The app's own server-side scope never changes. The one gap
+  this leaves: Picker lets you *browse into* folders but doesn't support
+  picking a whole folder recursively — you can multi-select many files
+  at once instead. Native Google Docs/Sheets/Slides are auto-exported to
+  `.docx`/`.xlsx`/`.pptx` on the way in, since those formats have no raw
+  file bytes to download directly.
 
 ## Known limitations / good next enhancements
 
@@ -105,7 +173,9 @@ PYTHONPATH=. python tests/test_logic.py
   tier has ~512MB RAM, so very large files (multi-GB) would need
   streaming chunked upload instead of the current buffer-then-split
   approach — say the word and I'll add that.
-- No file versioning or folder structure yet — everything is a flat
-  namespace of filenames per user.
-- No progress bar on upload/download (fine for small-medium files, worth
-  adding for large ones).
+- No file versioning yet — re-uploading the same name overwrites the
+  index entry (the old Drive object becomes orphaned rather than reused).
+- "Existing user" recognition is per-browser-session (a cookie), not a
+  cross-device account system, since there's no database. If you lose
+  your session (new browser, cleared cookies) you re-enter your Client
+  ID/Secret once — there's no email/password recovery flow, by design.
