@@ -138,3 +138,16 @@ class DriveClient:
                 fields="id",
             ).execute()
         self._touch_cache()
+
+    def write_backup_blob(self, name: str, content: str) -> str:
+        """Writes a standalone, never-overwritten file into appDataFolder.
+        Used to preserve an undecryptable vault before replacing it, so a
+        SECRET_KEY mismatch doesn't silently destroy data with no way back."""
+        media = MediaIoBaseUpload(io.BytesIO(content.encode()), mimetype="application/octet-stream")
+        file = self._service.files().create(
+            body={"name": name, "parents": ["appDataFolder"]},
+            media_body=media,
+            fields="id",
+        ).execute()
+        self._touch_cache()
+        return file["id"]

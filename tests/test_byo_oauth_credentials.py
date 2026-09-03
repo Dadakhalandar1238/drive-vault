@@ -91,7 +91,7 @@ def test_load_vault_self_heals_when_encrypted_under_a_different_secret_key():
     """Reproduces the exact reported crash: a vault written by a different
     SECRET_KEY (e.g. local testing vs. a deployed instance with its own
     auto-generated key) must not crash the whole request -- it should
-    start a fresh vault instead."""
+    start a fresh vault instead, and back up the undecryptable original."""
     import base64
     import hashlib
     import json as jsonlib
@@ -114,6 +114,12 @@ def test_load_vault_self_heals_when_encrypted_under_a_different_secret_key():
     assert loaded["folders"] == []
     assert loaded["oauth_client"] is None
 
+    # The undecryptable original must be preserved, not silently discarded.
+    fake_client.write_backup_blob.assert_called_once()
+    backup_name, backup_content = fake_client.write_backup_blob.call_args[0]
+    assert backup_name.startswith("vault.enc.backup-")
+    assert backup_content == ciphertext_from_other_key
+
 
 def test_load_vault_self_heals_on_corrupted_garbage_content():
     from unittest.mock import MagicMock
@@ -123,6 +129,19 @@ def test_load_vault_self_heals_on_corrupted_garbage_content():
 
     loaded = vault.load_vault(fake_client)  # must not raise
     assert loaded == vault.EMPTY_VAULT or loaded["files"] == {}
+    fake_client.write_backup_blob.assert_called_once()
+
+
+def test_load_vault_proceeds_even_if_backup_write_itself_fails():
+    """Losing the backup is better than crashing the login entirely."""
+    from unittest.mock import MagicMock
+
+    fake_client = MagicMock()
+    fake_client.read_vault_raw.return_value = "garbage-ciphertext"
+    fake_client.write_backup_blob.side_effect = RuntimeError("Drive API quota exceeded")
+
+    loaded = vault.load_vault(fake_client)  # must not raise, even though backup failed
+    assert loaded["files"] == {}
 
 
 if __name__ == "__main__":
