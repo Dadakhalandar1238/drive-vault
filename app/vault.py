@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from .crypto import decrypt, encrypt
@@ -48,27 +49,45 @@ def load_vault(primary_client: DriveClient) -> dict:
     if raw is not None:
         try:
             v = json.loads(decrypt(raw))
-        except Exception:
+        except Exception as e:
             # Most commonly means this vault was encrypted under a
             # different SECRET_KEY than the server is running with now --
             # e.g. testing locally and against a deployed instance with
             # the same Google account, or a key rotation. There's no way
-            # to recover the old index without the old key, so rather
-            # than crash, start fresh: the user's actual Drive files are
-            # untouched, only our tracking of them resets, and saving
-            # again immediately self-heals for every future login.
+            # to recover the old index without the old key here and now,
+            # so rather than crash, start fresh: the user's actual Drive
+            # files are untouched, only our tracking of them resets.
+            #
+            # No exc_info here on purpose -- this is a handled, recovered
+            # situation, not a crash, and a full traceback in the logs
+            # reads as one even though the request succeeds regardless.
             logger.warning(
-                "Could not decrypt existing vault -- starting a fresh one. "
-                "This usually means SECRET_KEY changed since this vault "
-                "was last saved.",
-                exc_info=True,
+                "Could not decrypt existing vault (%s: %s) -- starting a "
+                "fresh one. This usually means SECRET_KEY changed since "
+                "this vault was last saved.",
+                type(e).__name__, e,
             )
+            _backup_undecryptable_vault(primary_client, raw)
             v = None
     if v is None:
         v = json.loads(json.dumps(EMPTY_VAULT))  # deep copy
     v.setdefault("folders", [])  # migrates vaults saved before folders existed
     v.setdefault("oauth_client", None)  # migrates vaults saved before per-user OAuth apps
     return v
+
+
+def _backup_undecryptable_vault(primary_client: DriveClient, raw_ciphertext: str) -> None:
+    """Preserves an undecryptable vault before it gets overwritten by a
+    fresh one, so a SECRET_KEY mismatch is recoverable later (by someone
+    who still has the old key) rather than silently destroyed. Best
+    effort: if this itself fails, we still proceed with a fresh vault --
+    losing the backup is better than crashing the whole login."""
+    try:
+        backup_name = f"vault.enc.backup-{int(time.time())}"
+        primary_client.write_backup_blob(backup_name, raw_ciphertext)
+        logger.warning("Backed up the undecryptable vault as '%s' before replacing it.", backup_name)
+    except Exception:
+        logger.warning("Could not back up the undecryptable vault -- proceeding without one.")
 
 
 def save_vault(primary_client: DriveClient, vault: dict) -> None:
