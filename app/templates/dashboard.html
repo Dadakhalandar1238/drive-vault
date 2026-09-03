@@ -1,0 +1,528 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Drive Vault &mdash; Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <h1>Drive Vault</h1>
+      <div class="session-info">
+        <span>{{ email }}</span>
+        <a href="/logout">Log out</a>
+      </div>
+    </div>
+
+    <section class="pool">
+      <p class="section-title">Pooled storage</p>
+      <div class="pool-figure" id="poolFigure">
+        <span class="num skeleton-text">&hellip;</span><span class="unit">loading&hellip;</span>
+      </div>
+      <p class="pool-sub" id="poolSub">
+        Across {{ accounts|length }} connected drive{{ 's' if accounts|length != 1 else '' }}
+      </p>
+      <div class="gauge-track">
+        <div class="gauge-fill healthy skeleton-fill" id="poolGaugeFill" data-fill="0"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="tanks-head">
+        <p class="section-title">Connected drives ({{ num_drives }}/{{ max_drives }})</p>
+        {% if can_add_drive %}
+          <a class="btn secondary" href="/connect-drive">+ Connect another drive</a>
+        {% else %}
+          <button class="btn secondary" disabled>Drive limit reached</button>
+        {% endif %}
+      </div>
+      <div class="tanks">
+        {% for a in accounts %}
+          <div class="tank" data-account="{{ a.key }}">
+            <div class="tank-head">
+              <span class="tank-label">{{ a.label }}</span>
+              {% if a.is_primary %}<span class="tank-primary-tag">primary</span>{% endif %}
+            </div>
+            <div class="tank-email">{{ a.email }}</div>
+            <div class="tank-track">
+              <div class="tank-fill skeleton-fill" data-fill="0"></div>
+            </div>
+            <div class="tank-stats">
+              <span class="skeleton-text">loading&hellip;</span><strong></strong>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">Upload</p>
+      <div class="dropzone" id="dropzone">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M14 4V17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M8.5 11.5L14 17L19.5 11.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 20V21C4 22.6569 5.34315 24 7 24H21C22.6569 24 24 22.6569 24 21V20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <p>Drop files here, or <button type="button" id="browseBtn">browse</button></p>
+        <input type="file" id="fileInput" multiple hidden />
+      </div>
+      <div class="upload-row">
+        <p class="upload-hint">
+          Uploading into <strong>{{ 'Home' if not current_folder else current_folder }}</strong> &mdash;
+          placed on whichever drive has the most room, or split across several if none fit alone.
+        </p>
+        {% if google_picker_api_key %}
+          <button class="btn secondary" type="button" id="importBtn">Import from Drive</button>
+        {% else %}
+          <span class="muted-hint" title="Set GOOGLE_PICKER_API_KEY to enable importing existing Drive files">Import from Drive (not configured)</span>
+        {% endif %}
+      </div>
+      <div class="progress-wrap" id="progressWrap" hidden>
+        <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+        <span class="progress-label" id="progressLabel">Uploading&hellip; 0%</span>
+      </div>
+    </section>
+
+    <section>
+      <div class="files-head">
+        <p class="section-title">Files</p>
+        <div class="files-actions">
+          <button class="btn secondary" type="button" id="newFolderBtn">+ New folder</button>
+        </div>
+      </div>
+
+      <form id="newFolderForm" class="new-folder-form" action="/folders/create" method="post" hidden>
+        <input type="hidden" name="parent" value="{{ current_folder }}" />
+        <input type="text" name="name" placeholder="Folder name" required autocomplete="off" />
+        <button class="btn" type="submit">Create</button>
+      </form>
+
+      <div class="breadcrumbs">
+        {% for b in breadcrumbs %}
+          {% if not loop.last %}
+            <a href="/dashboard?folder={{ b.path }}">{{ b.name }}</a><span class="crumb-sep">/</span>
+          {% else %}
+            <span class="crumb-current">{{ b.name }}</span>
+          {% endif %}
+        {% endfor %}
+      </div>
+
+      {% if subfolders %}
+      <div class="folder-grid">
+        {% for f in subfolders %}
+          <div class="folder-chip">
+            <a href="/dashboard?folder={{ f.path }}">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M2 4C2 3.44772 2.44772 3 3 3H6.5L8 4.5H13C13.5523 4.5 14 4.94772 14 5.5V11.5C14 12.0523 13.5523 12.5 13 12.5H3C2.44772 12.5 2 12.0523 2 11.5V4Z" stroke="currentColor" stroke-width="1.3"/>
+              </svg>
+              {{ f.name }}
+            </a>
+            <button type="button" class="folder-delete" onclick="deleteFolder('{{ f.path }}', this)" title="Delete folder and contents">&times;</button>
+          </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="bulk-bar" id="bulkBar" hidden>
+        <span><strong id="bulkCount">0</strong> selected</span>
+        <button class="btn danger" type="button" onclick="deleteSelected(this)">Delete selected</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th class="checkbox-col"><input type="checkbox" id="selectAll" /></th>
+            <th>Name</th><th>Size (MB)</th><th>Uploaded</th><th>Chunks</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in files %}
+          <tr>
+            <td class="checkbox-col"><input type="checkbox" class="file-checkbox" value="{{ f.key }}" /></td>
+            <td>{{ f.name }}</td>
+            <td>{{ f.size_mb }}</td>
+            <td>{{ f.uploaded_at }}</td>
+            <td>{{ f.num_chunks }}</td>
+            <td class="actions">
+              <button class="btn secondary" type="button" onclick="downloadFile('{{ f.key }}', this)">Download</button>
+              <button class="btn danger" type="button" onclick="deleteFile('{{ f.key }}', this)">Delete</button>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="empty-row">Nothing here yet &mdash; upload something above.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <script>
+    const CURRENT_FOLDER = {{ current_folder|tojson }};
+    const GOOGLE_CLIENT_ID = {{ google_client_id|tojson }};
+    const GOOGLE_PICKER_API_KEY = {{ google_picker_api_key|tojson }};
+
+    // Animate gauges in from zero on load -- one deliberate reveal, not per-element hover effects.
+    window.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('[data-fill]').forEach(el => {
+        const target = el.dataset.fill;
+        requestAnimationFrame(() => { el.style.width = target + '%'; });
+      });
+      loadStorageOverview();
+    });
+
+    // Live free/used numbers load in the background so folder navigation
+    // itself never has to wait on a quota check across every drive.
+    async function loadStorageOverview() {
+      try {
+        const resp = await fetch('/api/storage-overview');
+        if (!resp.ok) throw new Error(resp.status);
+        const data = await resp.json();
+        renderPool(data.pool);
+        for (const [key, info] of Object.entries(data.accounts)) {
+          renderTank(key, info);
+        }
+      } catch (err) {
+        document.getElementById('poolFigure').innerHTML = '<span class="unit">Couldn\u2019t load live storage numbers.</span>';
+      }
+    }
+
+    function renderPool(pool) {
+      const figure = document.getElementById('poolFigure');
+      if (pool.total_capacity_gb) {
+        figure.innerHTML = `<span class="num">${pool.total_free_gb}</span><span class="unit">GB free of ${pool.total_capacity_gb} GB</span>`;
+      } else {
+        figure.innerHTML = `<span class="num">${pool.total_usage_gb}</span><span class="unit">GB used \u2014 unlimited capacity</span>`;
+      }
+      if (pool.unlimited_count) {
+        document.getElementById('poolSub').innerHTML += ` (${pool.unlimited_count} with unlimited storage)`;
+      }
+      const fill = document.getElementById('poolGaugeFill');
+      fill.classList.remove('skeleton-fill');
+      fill.classList.add(pool.level);
+      const pct = pool.percent_used !== null && pool.percent_used !== undefined ? pool.percent_used : 6;
+      fill.style.width = pct + '%';
+    }
+
+    function renderTank(key, info) {
+      const tank = document.querySelector(`.tank[data-account="${key}"]`);
+      if (!tank) return;
+      const fill = tank.querySelector('.tank-fill');
+      fill.classList.remove('skeleton-fill');
+      fill.classList.add(info.unlimited ? 'healthy' : info.level);
+      fill.style.width = (info.unlimited ? 4 : info.percent_used) + '%';
+
+      const [freeSpan, fullStrong] = tank.querySelectorAll('.tank-stats span, .tank-stats strong');
+      if (info.unlimited) {
+        freeSpan.textContent = 'Unlimited storage';
+        fullStrong.textContent = `${info.usage_gb} GB used`;
+      } else {
+        freeSpan.textContent = `${info.free_gb} GB free`;
+        fullStrong.textContent = `${info.percent_used}% full`;
+      }
+    }
+
+    function encodePath(key) {
+      return key.split('/').map(encodeURIComponent).join('/');
+    }
+
+    // ---------------- upload (drag/drop + browse + Picker share this) ----------------
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const browseBtn = document.getElementById('browseBtn');
+    const progressWrap = document.getElementById('progressWrap');
+    const progressFill = document.getElementById('progressFill');
+    const progressLabel = document.getElementById('progressLabel');
+
+    browseBtn.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('click', (e) => { if (e.target === dropzone) fileInput.click(); });
+    fileInput.addEventListener('change', () => { if (fileInput.files.length) uploadFiles(fileInput.files); });
+
+    ['dragover', 'dragleave', 'drop'].forEach(evt => {
+      dropzone.addEventListener(evt, e => e.preventDefault());
+    });
+    dropzone.addEventListener('dragover', () => dropzone.classList.add('dragover'));
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', e => {
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+    });
+
+    function uploadFiles(fileList) {
+      const formData = new FormData();
+      for (const f of fileList) formData.append('files', f);
+      formData.append('folder', CURRENT_FOLDER);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload');
+      progressWrap.hidden = false;
+      progressFill.style.width = '0%';
+      progressLabel.textContent = `Uploading ${fileList.length} file${fileList.length > 1 ? 's' : ''}\u2026 0%`;
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          progressFill.style.width = pct + '%';
+          progressLabel.textContent = `Uploading\u2026 ${pct}%`;
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 400) {
+          progressFill.style.width = '100%';
+          progressLabel.textContent = 'Done \u2014 refreshing\u2026';
+          setTimeout(() => location.href = `/dashboard?folder=${encodeURIComponent(CURRENT_FOLDER)}`, 400);
+        } else {
+          progressLabel.textContent = 'Upload failed: ' + xhr.responseText;
+        }
+      };
+      xhr.onerror = () => { progressLabel.textContent = 'Upload failed \u2014 network error.'; };
+      xhr.send(formData);
+    }
+
+    // ---------------- inline button loading state ----------------
+    function setButtonLoading(btn, label = '') {
+      if (!btn) return;
+      if (btn.dataset.originalHtml === undefined) btn.dataset.originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.classList.add('is-loading');
+      btn.innerHTML = label
+        ? `<span class="spinner"></span>${label}`
+        : `<span class="spinner standalone"></span>`;
+    }
+    function resetButton(btn) {
+      if (!btn) return;
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+      if (btn.dataset.originalHtml !== undefined) btn.innerHTML = btn.dataset.originalHtml;
+    }
+
+    // ---------------- single / batch / folder delete ----------------
+    async function deleteFile(key, btn) {
+      if (!confirm(`Delete "${key}"? This removes it from Drive too.`)) return;
+      setButtonLoading(btn, 'Deleting\u2026');
+      try {
+        const resp = await fetch(`/files/${encodePath(key)}`, { method: "DELETE" });
+        if (resp.ok) { location.reload(); return; }
+        resetButton(btn);
+        alert("Delete failed: " + (await resp.text()));
+      } catch (err) {
+        resetButton(btn);
+        alert("Delete failed \u2014 network error.");
+      }
+    }
+
+    async function deleteSelected(btn) {
+      const checked = [...document.querySelectorAll('.file-checkbox:checked')].map(cb => cb.value);
+      if (checked.length === 0) return;
+      if (!confirm(`Delete ${checked.length} selected file${checked.length > 1 ? 's' : ''}? This removes them from Drive too.`)) return;
+      setButtonLoading(btn, 'Deleting\u2026');
+      try {
+        const resp = await fetch('/files/batch-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filenames: checked }),
+        });
+        if (resp.ok) { location.reload(); return; }
+        resetButton(btn);
+        alert("Delete failed: " + (await resp.text()));
+      } catch (err) {
+        resetButton(btn);
+        alert("Delete failed \u2014 network error.");
+      }
+    }
+
+    async function deleteFolder(path, btn) {
+      const name = path.split('/').pop();
+      if (!confirm(`Delete folder "${name}" and everything inside it?`)) return;
+      setButtonLoading(btn); // compact icon-only button, no label text
+      try {
+        const resp = await fetch('/folders/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+        if (resp.ok) { location.reload(); return; }
+        resetButton(btn);
+        alert("Delete failed: " + (await resp.text()));
+      } catch (err) {
+        resetButton(btn);
+        alert("Delete failed \u2014 network error.");
+      }
+    }
+
+    // ---------------- download (with real progress, not just a spinner) ----------------
+    function downloadFile(key, btn) {
+      setButtonLoading(btn, 'Preparing\u2026');
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', `/download/${encodePath(key)}`);
+      xhr.responseType = 'blob';
+
+      xhr.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          btn.innerHTML = `<span class="spinner"></span>${pct}%`;
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const url = URL.createObjectURL(xhr.response);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = key.split('/').pop();
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        } else {
+          alert('Download failed: ' + xhr.status);
+        }
+        resetButton(btn);
+      };
+      xhr.onerror = () => {
+        resetButton(btn);
+        alert('Download failed \u2014 network error.');
+      };
+      xhr.send();
+    }
+
+    function updateBulkBar() {
+      const checked = document.querySelectorAll('.file-checkbox:checked');
+      document.getElementById('bulkBar').hidden = checked.length === 0;
+      document.getElementById('bulkCount').textContent = checked.length;
+    }
+    document.getElementById('selectAll').addEventListener('change', (e) => {
+      document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = e.target.checked);
+      updateBulkBar();
+    });
+    document.querySelectorAll('.file-checkbox').forEach(cb => cb.addEventListener('change', updateBulkBar));
+
+    // ---------------- new folder ----------------
+    const newFolderBtn = document.getElementById('newFolderBtn');
+    const newFolderForm = document.getElementById('newFolderForm');
+    newFolderBtn.addEventListener('click', () => {
+      newFolderForm.hidden = !newFolderForm.hidden;
+      if (!newFolderForm.hidden) newFolderForm.querySelector('input[name=name]').focus();
+    });
+
+    newFolderForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const submitBtn = newFolderForm.querySelector('button[type=submit]');
+      const nameInput = newFolderForm.querySelector('input[name=name]');
+      const name = nameInput.value.trim();
+      if (!name) return;
+
+      setButtonLoading(submitBtn, 'Creating\u2026');
+      try {
+        const resp = await fetch('/folders/create', { method: 'POST', body: new FormData(newFolderForm) });
+        if (resp.ok) {
+          const newPath = CURRENT_FOLDER ? `${CURRENT_FOLDER}/${name}` : name;
+          location.href = `/dashboard?folder=${encodeURIComponent(newPath)}`;
+          return;
+        }
+        resetButton(submitBtn);
+        alert('Failed to create folder: ' + (await resp.text()));
+      } catch (err) {
+        resetButton(submitBtn);
+        alert('Failed to create folder \u2014 network error.');
+      }
+    });
+
+    // ---------------- import from existing Drive (Google Picker) ----------------
+    let pickerAccessToken = null;
+    let tokenClient = null;
+
+    function loadScriptOnce(src) {
+      return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) return resolve();
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    const GOOGLE_EXPORT_TYPES = {
+      'application/vnd.google-apps.document': { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: '.docx' },
+      'application/vnd.google-apps.spreadsheet': { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: '.xlsx' },
+      'application/vnd.google-apps.presentation': { mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', ext: '.pptx' },
+      'application/vnd.google-apps.drawing': { mime: 'image/png', ext: '.png' },
+    };
+
+    async function fetchPickedFile(item) {
+      const isNative = item.mimeType && item.mimeType.startsWith('application/vnd.google-apps');
+      let url, filename = item.name;
+      if (isNative) {
+        const exp = GOOGLE_EXPORT_TYPES[item.mimeType];
+        if (!exp) { alert(`Skipping "${item.name}" \u2014 that Google file type can't be exported automatically.`); return null; }
+        url = `https://www.googleapis.com/drive/v3/files/${item.id}/export?mimeType=${encodeURIComponent(exp.mime)}`;
+        if (!filename.toLowerCase().endsWith(exp.ext)) filename += exp.ext;
+      } else {
+        url = `https://www.googleapis.com/drive/v3/files/${item.id}?alt=media`;
+      }
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${pickerAccessToken}` } });
+      if (!resp.ok) throw new Error(`Drive returned ${resp.status} for "${item.name}"`);
+      const blob = await resp.blob();
+      return new File([blob], filename, { type: blob.type });
+    }
+
+    async function onPickerResult(data) {
+      if (data.action !== google.picker.Action.PICKED) return;
+      const items = data.docs;
+      progressWrap.hidden = false;
+      progressFill.style.width = '5%';
+      progressLabel.textContent = `Fetching ${items.length} file${items.length > 1 ? 's' : ''} from Drive\u2026`;
+
+      const files = [];
+      for (const item of items) {
+        try {
+          const f = await fetchPickedFile(item);
+          if (f) files.push(f);
+        } catch (err) {
+          console.error(err);
+          alert(`Couldn't fetch "${item.name}": ${err.message}`);
+        }
+      }
+      if (files.length) uploadFiles(files);
+      else progressWrap.hidden = true;
+    }
+
+    function showPicker() {
+      const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(false);
+      const picker = new google.picker.PickerBuilder()
+        .addView(view)
+        .setOAuthToken(pickerAccessToken)
+        .setDeveloperKey(GOOGLE_PICKER_API_KEY)
+        .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+        .setCallback(onPickerResult)
+        .build();
+      picker.setVisible(true);
+    }
+
+    async function openDrivePicker() {
+      await loadScriptOnce('https://apis.google.com/js/api.js');
+      await new Promise(resolve => gapi.load('picker', resolve));
+      await loadScriptOnce('https://accounts.google.com/gsi/client');
+
+      if (!tokenClient) {
+        tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: GOOGLE_CLIENT_ID,
+          scope: 'https://www.googleapis.com/auth/drive.file',
+          callback: (resp) => {
+            if (resp.error) { alert('Google sign-in failed: ' + resp.error); return; }
+            pickerAccessToken = resp.access_token;
+            showPicker();
+          },
+        });
+      }
+      tokenClient.requestAccessToken({ prompt: pickerAccessToken ? '' : 'consent' });
+    }
+
+    const importBtn = document.getElementById('importBtn');
+    if (importBtn) importBtn.addEventListener('click', openDrivePicker);
+  </script>
+</body>
+</html>

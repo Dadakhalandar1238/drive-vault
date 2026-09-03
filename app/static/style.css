@@ -1,0 +1,301 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap');
+
+:root {
+  --bg: #10161d;
+  --panel: #17202b;
+  --panel-alt: #1c2632;
+  --border: #2a3542;
+  --text: #e9eef2;
+  --text-dim: #8fa0af;
+  --teal: #35d0c0;
+  --teal-dim: rgba(53, 208, 192, 0.15);
+  --amber: #f2a154;
+  --coral: #ef6462;
+}
+
+* { box-sizing: border-box; }
+
+html { color-scheme: dark; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1, .num, .gauge-label, .btn {
+  font-family: "Space Grotesk", -apple-system, sans-serif;
+}
+
+.wrap { max-width: 1040px; margin: 0 auto; padding: 36px 24px 80px; }
+.center { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+
+/* ---------- topbar ---------- */
+.topbar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 28px;
+}
+.topbar h1 { font-size: 1.4rem; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.session-info { display: flex; align-items: baseline; gap: 16px; }
+.session-info span { color: var(--text-dim); font-size: 0.85rem; }
+.session-info a { color: var(--text-dim); font-size: 0.85rem; text-decoration: none; border-bottom: 1px solid var(--border); }
+.session-info a:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* ---------- section headings ---------- */
+.section-title {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin: 0 0 12px;
+  font-weight: 500;
+}
+
+section { margin-bottom: 36px; }
+
+/* ---------- pool gauge (hero) ---------- */
+.pool {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px 28px 24px;
+}
+.pool-figure { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 16px; }
+.pool-figure .num { font-size: 2.6rem; font-weight: 700; line-height: 1; letter-spacing: -0.02em; }
+.pool-figure .unit { font-size: 1.1rem; color: var(--text-dim); font-weight: 500; padding-bottom: 3px; }
+.pool-sub { color: var(--text-dim); font-size: 0.88rem; margin: 0 0 18px; }
+.gauge-track {
+  position: relative;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.gauge-fill {
+  height: 100%;
+  border-radius: 999px;
+  width: 0%;
+  transition: width 900ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.gauge-fill.healthy { background: linear-gradient(90deg, var(--teal), #23a99c); }
+.gauge-fill.warning { background: linear-gradient(90deg, var(--amber), #d98639); }
+.gauge-fill.critical { background: linear-gradient(90deg, var(--coral), #d84a48); }
+
+/* ---------- drive tanks ---------- */
+.tanks-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.tanks-head .section-title { margin: 0; }
+.tanks { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+.tank {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.tank-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+.tank-label { font-weight: 600; font-size: 0.92rem; }
+.tank-primary-tag {
+  font-size: 0.68rem;
+  color: var(--teal);
+  background: var(--teal-dim);
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.tank-email { color: var(--text-dim); font-size: 0.78rem; margin-bottom: 12px; word-break: break-all; }
+.tank-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.tank-fill { height: 100%; border-radius: 999px; width: 0%; transition: width 900ms cubic-bezier(0.16, 1, 0.3, 1); }
+.tank-fill.healthy { background: var(--teal); }
+.tank-fill.warning { background: var(--amber); }
+.tank-fill.critical { background: var(--coral); }
+.tank-stats { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-dim); }
+.tank-stats strong { color: var(--text); font-weight: 600; }
+
+/* ---------- buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--teal);
+  color: #0b1512;
+  padding: 9px 18px;
+  border-radius: 999px;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.85rem;
+  border: none;
+  cursor: pointer;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); font-family: inherit; }
+.btn.secondary:hover { border-color: var(--text-dim); }
+.btn.danger { background: transparent; border: 1px solid var(--coral); color: var(--coral); }
+.btn.danger:hover { background: rgba(239, 100, 98, 0.1); }
+.btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+/* ---------- upload / dropzone ---------- */
+.dropzone {
+  border: 1.5px dashed var(--border);
+  border-radius: 12px;
+  padding: 32px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 150ms, background 150ms;
+}
+.dropzone:hover, .dropzone.dragover { border-color: var(--teal); background: var(--teal-dim); }
+.dropzone svg { color: var(--text-dim); margin-bottom: 10px; }
+.dropzone.dragover svg { color: var(--teal); }
+.dropzone p { margin: 0; color: var(--text-dim); font-size: 0.9rem; }
+.dropzone button { background: none; border: none; color: var(--teal); font-weight: 600; cursor: pointer; padding: 0; font-size: 0.9rem; text-decoration: underline; }
+.upload-hint { color: var(--text-dim); font-size: 0.82rem; margin: 10px 2px 14px; }
+
+.progress-wrap { margin-top: 14px; }
+.progress-track { height: 10px; border-radius: 999px; background: var(--panel-alt); border: 1px solid var(--border); overflow: hidden; }
+.progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--teal), #23a99c); border-radius: 999px; transition: width 120ms linear; }
+.progress-label { font-size: 0.8rem; color: var(--text-dim); margin-top: 6px; display: block; }
+
+/* ---------- file manifest table ---------- */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 11px 6px; border-bottom: 1px solid var(--border); font-size: 0.87rem; }
+th { color: var(--text-dim); font-weight: 500; font-size: 0.78rem; }
+tbody tr:last-child td { border-bottom: none; }
+td.actions { display: flex; gap: 8px; justify-content: flex-end; }
+td.actions .btn { padding: 6px 14px; font-size: 0.78rem; }
+.empty-row { color: var(--text-dim); text-align: center; padding: 24px 0; }
+
+/* ---------- login page ---------- */
+.login-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 36px;
+  max-width: 400px;
+  text-align: center;
+}
+.login-card h1 { font-size: 1.5rem; margin: 18px 0 8px; }
+.login-card p { color: var(--text-dim); font-size: 0.9rem; margin: 0 0 24px; }
+.login-icon { color: var(--teal); }
+
+@media (max-width: 560px) {
+  .topbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .pool-figure .num { font-size: 2rem; }
+  td.actions { flex-direction: column; }
+}
+
+/* ---------- upload row (hint + import button) ---------- */
+.upload-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-top: 10px; }
+.muted-hint { color: var(--text-dim); font-size: 0.78rem; cursor: help; border-bottom: 1px dotted var(--border); }
+
+/* ---------- files section head + new folder form ---------- */
+.files-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.files-head .section-title { margin: 0; }
+.new-folder-form { display: flex; gap: 8px; margin-bottom: 16px; }
+.new-folder-form input[type="text"] {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  flex: 1;
+  max-width: 260px;
+}
+.new-folder-form input[type="text"]:focus { outline: none; border-color: var(--teal); }
+
+/* ---------- breadcrumbs ---------- */
+.breadcrumbs { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; font-size: 0.85rem; }
+.breadcrumbs a { color: var(--text-dim); text-decoration: none; }
+.breadcrumbs a:hover { color: var(--teal); }
+.breadcrumbs .crumb-sep { color: var(--border); }
+.breadcrumbs .crumb-current { color: var(--text); font-weight: 600; }
+
+/* ---------- folder grid ---------- */
+.folder-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.folder-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 8px 8px 14px;
+}
+.folder-chip a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.87rem;
+  font-weight: 500;
+}
+.folder-chip svg { color: var(--teal); flex-shrink: 0; }
+.folder-chip a:hover { color: var(--teal); }
+.folder-delete {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.folder-delete:hover { color: var(--coral); background: rgba(239, 100, 98, 0.1); }
+
+/* ---------- checkboxes + bulk delete bar ---------- */
+.checkbox-col { width: 36px; }
+.file-checkbox, #selectAll { width: 15px; height: 15px; accent-color: var(--teal); cursor: pointer; }
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  font-size: 0.85rem;
+}
+.bulk-bar strong { color: var(--text); }
+
+/* ---------- loading skeleton (storage numbers arrive async) ---------- */
+.skeleton-text { color: var(--text-dim); opacity: 0.6; }
+.skeleton-fill {
+  background: linear-gradient(90deg, var(--panel-alt), var(--border), var(--panel-alt));
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ---------- inline button loading state ---------- */
+.spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: -1.5px;
+  margin-right: 6px;
+}
+.spinner.standalone { margin-right: 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn.is-loading { opacity: 0.7; cursor: wait; }
