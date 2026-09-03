@@ -12,4 +12,4 @@ services:
       - key: MAX_DRIVES_PER_USER
         value: "10"
       - key: MAX_WORKERS
-        value: "10"
+        value: "4"
