@@ -87,6 +87,44 @@ def test_load_vault_migrates_vault_missing_oauth_client_key():
     assert loaded["folders"] == []
 
 
+def test_load_vault_self_heals_when_encrypted_under_a_different_secret_key():
+    """Reproduces the exact reported crash: a vault written by a different
+    SECRET_KEY (e.g. local testing vs. a deployed instance with its own
+    auto-generated key) must not crash the whole request -- it should
+    start a fresh vault instead."""
+    import base64
+    import hashlib
+    import json as jsonlib
+    from unittest.mock import MagicMock
+
+    from cryptography.fernet import Fernet
+
+    different_key_digest = hashlib.sha256(b"a-totally-different-secret-key").digest()
+    different_fernet = Fernet(base64.urlsafe_b64encode(different_key_digest))
+    ciphertext_from_other_key = different_fernet.encrypt(
+        jsonlib.dumps({"accounts": {}, "files": {"old.txt": {}}}).encode()
+    ).decode()
+
+    fake_client = MagicMock()
+    fake_client.read_vault_raw.return_value = ciphertext_from_other_key
+
+    loaded = vault.load_vault(fake_client)  # must not raise
+    assert loaded["files"] == {}
+    assert loaded["accounts"] == {}
+    assert loaded["folders"] == []
+    assert loaded["oauth_client"] is None
+
+
+def test_load_vault_self_heals_on_corrupted_garbage_content():
+    from unittest.mock import MagicMock
+
+    fake_client = MagicMock()
+    fake_client.read_vault_raw.return_value = "not-even-valid-fernet-ciphertext"
+
+    loaded = vault.load_vault(fake_client)  # must not raise
+    assert loaded == vault.EMPTY_VAULT or loaded["files"] == {}
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))
