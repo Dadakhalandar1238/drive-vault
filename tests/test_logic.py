@@ -5,9 +5,6 @@ anywhere -- no network, no credentials.
 """
 import os
 
-os.environ.setdefault("GOOGLE_CLIENT_ID", "test")
-os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test")
-os.environ.setdefault("REDIRECT_URI", "http://localhost:8000/oauth/callback")
 os.environ.setdefault("SECRET_KEY", "unit-test-secret-key")
 
 from app import crypto, distributor, session, vault  # noqa: E402
@@ -21,11 +18,16 @@ def test_crypto_roundtrip():
 
 
 def test_session_cookie_roundtrip():
-    cookie = session.create_session_cookie("sub123", "me@example.com", "refresh-token-xyz")
+    cookie = session.create_session_cookie(
+        "sub123", "me@example.com", "refresh-token-xyz",
+        "test-client-id.apps.googleusercontent.com", "test-client-secret",
+    )
     data = session.read_session_cookie(cookie)
     assert data["sub"] == "sub123"
     assert data["email"] == "me@example.com"
     assert data["refresh_token"] == "refresh-token-xyz"
+    assert data["client_id"] == "test-client-id.apps.googleusercontent.com"
+    assert data["client_secret"] == "test-client-secret"
 
 
 def test_session_cookie_rejects_garbage():

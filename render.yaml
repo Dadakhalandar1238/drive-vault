@@ -5,14 +5,10 @@ services:
     plan: free
     autoDeploy: true
     envVars:
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: REDIRECT_URI
-        sync: false
       - key: SECRET_KEY
         generateValue: true
+      - key: GOOGLE_PICKER_API_KEY
+        sync: false
       - key: MAX_DRIVES_PER_USER
         value: "10"
       - key: MAX_WORKERS

@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from .crypto import decrypt, encrypt
 from .drive_client import DriveClient
 
-EMPTY_VAULT = {"accounts": {}, "folders": [], "files": {}}
+EMPTY_VAULT = {"accounts": {}, "folders": [], "files": {}, "oauth_client": None}
 
 
 def load_vault(primary_client: DriveClient) -> dict:
@@ -46,11 +46,26 @@ def load_vault(primary_client: DriveClient) -> dict:
     else:
         v = json.loads(decrypt(raw))
     v.setdefault("folders", [])  # migrates vaults saved before folders existed
+    v.setdefault("oauth_client", None)  # migrates vaults saved before per-user OAuth apps
     return v
 
 
 def save_vault(primary_client: DriveClient, vault: dict) -> None:
     primary_client.write_vault_raw(encrypt(json.dumps(vault)))
+
+
+def set_oauth_client(vault: dict, client_id: str, client_secret: str) -> None:
+    """Stores an encrypted backup of the user's own Google OAuth Client
+    ID/Secret inside their vault -- alongside everything else, it lives
+    only in their own Drive, never on our server."""
+    vault["oauth_client"] = {"client_id": client_id, "client_secret": encrypt(client_secret)}
+
+
+def get_oauth_client(vault: dict) -> tuple[str, str] | None:
+    entry = vault.get("oauth_client")
+    if not entry:
+        return None
+    return entry["client_id"], decrypt(entry["client_secret"])
 
 
 def add_or_update_account(vault: dict, google_sub: str, email: str, refresh_token: str, label: str) -> None:

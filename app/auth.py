@@ -2,6 +2,10 @@
 Builds and drives the Google OAuth2 "Authorization Code" flow. Used both
 for the primary sign-in (establishes the user's identity + session) and
 for adding secondary drives (just adds another refresh token to the vault).
+
+Every function here takes client_id/client_secret as parameters rather
+than reading them from a global config -- each user brings their own
+Google Cloud OAuth app, so there is no shared/global value to fall back to.
 """
 from __future__ import annotations
 
@@ -9,23 +13,21 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token as google_id_token
 from google_auth_oauthlib.flow import Flow
 
-from . import config
 
-
-def _client_config() -> dict:
+def _client_config(client_id: str, client_secret: str) -> dict:
     return {
         "web": {
-            "client_id": config.GOOGLE_CLIENT_ID,
-            "client_secret": config.GOOGLE_CLIENT_SECRET,
+            "client_id": client_id,
+            "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
         }
     }
 
 
-def build_flow(scopes: list[str], redirect_uri: str, state: str | None = None) -> Flow:
+def build_flow(client_id: str, client_secret: str, scopes: list[str], redirect_uri: str, state: str | None = None) -> Flow:
     return Flow.from_client_config(
-        _client_config(), scopes=scopes, redirect_uri=redirect_uri, state=state
+        _client_config(client_id, client_secret), scopes=scopes, redirect_uri=redirect_uri, state=state
     )
 
 
@@ -39,7 +41,7 @@ def get_authorization_url(flow: Flow, force_account_chooser: bool = False) -> st
     return url
 
 
-def exchange_code_for_identity(flow: Flow, code: str) -> dict:
+def exchange_code_for_identity(flow: Flow, code: str, client_id: str) -> dict:
     """Exchanges an auth code for tokens and returns {sub, email, refresh_token}."""
     flow.fetch_token(code=code)
     creds = flow.credentials
@@ -49,7 +51,7 @@ def exchange_code_for_identity(flow: Flow, code: str) -> dict:
             "account already granted consent previously without 'prompt=consent'."
         )
     info = google_id_token.verify_oauth2_token(
-        creds.id_token, GoogleAuthRequest(), audience=config.GOOGLE_CLIENT_ID
+        creds.id_token, GoogleAuthRequest(), audience=client_id
     )
     return {
         "sub": info["sub"],
