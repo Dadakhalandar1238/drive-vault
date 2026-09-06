@@ -4,9 +4,8 @@ for the primary sign-in (establishes the user's identity + session) and
 for adding secondary drives (just adds another refresh token to the vault).
 
 Every function here takes client_id/client_secret as parameters rather
-than importing config directly, so this module stays easy to test in
-isolation -- but in practice every caller in main.py passes the one
-shared app's config.GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.
+than reading them from a global config -- each user brings their own
+Google Cloud OAuth app, so there is no shared/global value to fall back to.
 """
 from __future__ import annotations
 

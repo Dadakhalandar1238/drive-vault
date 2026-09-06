@@ -8,8 +8,6 @@ import io
 import os
 
 os.environ.setdefault("SECRET_KEY", "unit-test-secret-key")
-os.environ.setdefault("GOOGLE_CLIENT_ID", "unit-test-client-id")
-os.environ.setdefault("GOOGLE_CLIENT_SECRET", "unit-test-client-secret")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -64,7 +62,7 @@ def env(monkeypatch):
     monkeypatch.setattr(vault, "save_vault", lambda client, vv: None)
 
     client = TestClient(app=main.app)
-    cookie = session.create_session_cookie("sub-primary", "me@example.com", "fake-refresh-token")
+    cookie = session.create_session_cookie("sub-primary", "me@example.com", "fake-refresh-token", "test-client-id", "test-client-secret")
     client.cookies.set(config.SESSION_COOKIE_NAME, cookie)
     return client, v
 

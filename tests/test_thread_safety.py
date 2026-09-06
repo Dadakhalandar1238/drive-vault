@@ -8,8 +8,6 @@ import os
 import threading
 
 os.environ.setdefault("SECRET_KEY", "unit-test-secret-key")
-os.environ.setdefault("GOOGLE_CLIENT_ID", "unit-test-client-id")
-os.environ.setdefault("GOOGLE_CLIENT_SECRET", "unit-test-client-secret")
 
 from app.drive_client import DriveClient  # noqa: E402
 from app.workers import parallel_map  # noqa: E402

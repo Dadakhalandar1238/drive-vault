@@ -25,31 +25,183 @@
       <div class="banner banner-error">{{ error_message }}</div>
     {% endif %}
 
+    {% if remembered_email %}
+      <div class="card">
+        <p class="section-title">Welcome back</p>
+        <p class="muted-p">
+          Continue with the Google Cloud project you already set up{% if remembered_email %} ({{ remembered_email }}){% endif %} &mdash;
+          no need to re-enter your Client ID or Secret.
+        </p>
+        <a class="btn" href="/continue" id="continueRememberedBtn">Continue to Google Sign-In</a>
+        <p class="muted-p" style="margin-top:10px;">
+          <a href="/forget-device">Not you? Use a different Google account</a>
+        </p>
+      </div>
+    {% endif %}
+
     <div class="card security-callout">
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect x="4" y="9" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
         <path d="M6.5 9V6.5a3.5 3.5 0 0 1 7 0V9" stroke="currentColor" stroke-width="1.5"/>
       </svg>
       <div>
-        <strong>Your files are only ever visible to you.</strong>
+        <strong>This app never sees or stores your Google credentials.</strong>
         <p>
-          Signing in only grants access to files this app itself creates, plus a hidden
-          configuration folder Google reserves for the app &mdash; never your existing Drive
-          contents. Nothing is stored on our server: your file index and connected-drive list live
-          encrypted inside your own Google Drive, and your login session is a signed, encrypted
-          cookie in your browser. Nobody operating this app can read your files.
+          Drive Vault doesn't have its own Google API access. Instead, you connect using a small,
+          free Google Cloud project that belongs to <em>you</em>. Your Client ID and Client Secret
+          are never written to any server or database here &mdash; they exist only inside an encrypted
+          cookie in your browser for this session, and an encrypted backup saved inside your own
+          Google Drive. Nobody operating this app can read them.
         </p>
       </div>
     </div>
 
     <div class="card">
-      <p class="section-title">Get started</p>
+      <p class="section-title">Why bring your own Google project?</p>
       <p class="muted-p">
-        Sign in with Google to see your dashboard. From there, <strong>Connect another drive</strong>
-        lets you add up to 10 of your own Google accounts into one pooled storage tank.
+        Every person who uses this app connects with their own Google Cloud project instead of a
+        shared one. That means your storage quota, your API usage, and your access are all
+        completely separate from everyone else's &mdash; nothing here is shared or pooled between users
+        except your own drives.
       </p>
-      <a class="btn" href="/login" id="signInBtn">Sign in with Google</a>
+    </div>
+
+    <div class="card">
+      <button type="button" class="toggle-row" id="guideToggle">
+        <span id="guideToggleLabel">Hide setup steps &mdash; I already have my Client ID &amp; Secret</span>
+        <span class="toggle-chevron" id="guideChevron">&#9650;</span>
+      </button>
+
+      <div id="guideBody">
+        <p class="muted-p" style="margin-top:4px;">
+          Takes about 10 minutes the first time. After this, signing in again is instant.
+        </p>
+
+        <ol class="steps">
+          <li>
+            <strong>Create a Google Cloud project.</strong>
+            Go to <a href="https://console.cloud.google.com" target="_blank" rel="noopener">console.cloud.google.com</a>,
+            click the project dropdown at the top, then <strong>New Project</strong>. Give it any name (e.g. "My Drive Vault") and create it.
+          </li>
+          <li>
+            <strong>Enable the Google Drive API.</strong>
+            With your new project selected, go to <strong>APIs &amp; Services &rarr; Library</strong>,
+            search for <strong>Google Drive API</strong>, and click <strong>Enable</strong>.
+          </li>
+          <li>
+            <strong>Set up the consent screen.</strong>
+            Go to <strong>APIs &amp; Services &rarr; Google Auth Platform</strong> &rarr; <strong>Get started</strong>.
+            <ul>
+              <li>App name: anything you like. User support email: your email.</li>
+              <li>Audience: choose <strong>External</strong>.</li>
+              <li>Contact info: your email again, then agree to the terms and create.</li>
+              <li>On the <strong>Audience</strong> tab, scroll to <strong>Test users</strong> and add your own email (and anyone else you want to let sign in).</li>
+              <li>On the <strong>Data Access</strong> tab, click <strong>Add or remove scopes</strong> and add these two (paste into "manually add scopes" if they don't show in the list):
+                <div class="code-block">
+                  <code>https://www.googleapis.com/auth/drive.file</code>
+                  <code>https://www.googleapis.com/auth/drive.appdata</code>
+                </div>
+              </li>
+            </ul>
+          </li>
+          <li>
+            <strong>Create your OAuth Client ID.</strong>
+            Still under <strong>Google Auth Platform</strong>, go to the <strong>Clients</strong> tab &rarr; <strong>Create Client</strong>.
+            <ul>
+              <li>Application type: <strong>Web application</strong></li>
+              <li>Name: anything, e.g. "Drive Vault Web Client"</li>
+              <li>Under <strong>Authorized redirect URIs</strong>, add <em>exactly</em> these two (click to copy each one &mdash; typos here are the most common setup mistake):
+                <div class="code-block copyable">
+                  <code id="redirectPrimary">{{ redirect_uri_primary }}</code>
+                  <button type="button" class="copy-btn" data-target="redirectPrimary">Copy</button>
+                </div>
+                <div class="code-block copyable">
+                  <code id="redirectSecondary">{{ redirect_uri_secondary }}</code>
+                  <button type="button" class="copy-btn" data-target="redirectSecondary">Copy</button>
+                </div>
+              </li>
+              <li>Click <strong>Create</strong>.</li>
+            </ul>
+          </li>
+          <li>
+            <strong>Copy your Client ID and Client Secret.</strong>
+            A box pops up showing both &mdash; copy them into the form below now, since the secret is
+            only ever shown this once. (If you lose it, just create a new one from the Clients list.)
+          </li>
+        </ol>
+
+        <p class="muted-p">
+          Your app will stay in <strong>Testing</strong> mode, meaning only the test users you listed
+          above can sign in, and everyone will see a "Google hasn't verified this app" warning before
+          continuing &mdash; that's normal and harmless; click through it.
+        </p>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="section-title">Connect your Google account</p>
+      <form action="/start-setup" method="post" class="setup-form">
+        <label>
+          Your email <span class="muted-hint">(just a label for you, not used to look anything up)</span>
+          <input type="email" name="email" placeholder="you@example.com" autocomplete="email" />
+        </label>
+        <label>
+          Client ID
+          <input type="text" name="client_id" placeholder="xxxxxxxxxx.apps.googleusercontent.com" required autocomplete="off" />
+        </label>
+        <label>
+          Client Secret
+          <div class="password-row">
+            <input type="password" name="client_secret" id="clientSecretInput" placeholder="GOCSPX-&hellip;" required autocomplete="off" />
+            <button type="button" class="btn secondary" id="toggleSecretBtn">Show</button>
+          </div>
+        </label>
+        <button class="btn" type="submit" id="continueBtn">Continue to Google Sign-In</button>
+      </form>
     </div>
   </div>
+
+  <script>
+    const guideToggle = document.getElementById('guideToggle');
+    const guideBody = document.getElementById('guideBody');
+    const guideToggleLabel = document.getElementById('guideToggleLabel');
+    const guideChevron = document.getElementById('guideChevron');
+    guideToggle.addEventListener('click', () => {
+      const hidden = guideBody.style.display === 'none';
+      guideBody.style.display = hidden ? '' : 'none';
+      guideToggleLabel.textContent = hidden
+        ? "Hide setup steps \u2014 I already have my Client ID & Secret"
+        : "Show me how to get a Client ID & Secret";
+      guideChevron.innerHTML = hidden ? '&#9650;' : '&#9660;';
+    });
+
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const text = document.getElementById(btn.dataset.target).textContent;
+        try {
+          await navigator.clipboard.writeText(text);
+          const original = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = original; }, 1500);
+        } catch (err) {
+          alert('Could not copy automatically -- please select and copy the text manually.');
+        }
+      });
+    });
+
+    const secretInput = document.getElementById('clientSecretInput');
+    const toggleSecretBtn = document.getElementById('toggleSecretBtn');
+    toggleSecretBtn.addEventListener('click', () => {
+      const isPassword = secretInput.type === 'password';
+      secretInput.type = isPassword ? 'text' : 'password';
+      toggleSecretBtn.textContent = isPassword ? 'Hide' : 'Show';
+    });
+
+    document.querySelector('.setup-form').addEventListener('submit', (e) => {
+      const btn = document.getElementById('continueBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Redirecting to Google\u2026';
+    });
+  </script>
 </body>
 </html>

@@ -2,26 +2,21 @@
 All configuration comes from environment variables so the app stays
 stateless and works identically on localhost, Render, Cloud Run, etc.
 
-One shared Google OAuth app serves every user of this deployment -- the
-deployer creates it once (see the README's setup guide) and configures it
-here. Users themselves never see, enter, or need to safeguard a Client
-ID/Secret; they just click "Sign in with Google". This deliberately trades
-away per-user API quota isolation for the simple fact that nobody can lose
-a credential they never had to hold in the first place.
+Notably absent: any Google OAuth Client ID/Secret. This app does not have
+one of its own -- every user brings their own Google Cloud project when
+they sign in (see the welcome page / onboarding flow), and it's never
+persisted here. This file only holds things that are genuinely safe to
+share across every visitor to this deployment.
 """
 from __future__ import annotations
 
 import os
 
-# Random 32+ byte secret used to sign/encrypt session cookies. Generate with:
+# Random 32+ byte secret used to sign/encrypt session cookies. This is
+# the only "credential" this deployment itself holds, and it never
+# grants access to anyone's Drive by itself. Generate with:
 #   python -c "import secrets; print(secrets.token_urlsafe(32))"
 SECRET_KEY = os.environ["SECRET_KEY"]
-
-# The one Google Cloud OAuth Client ID/Secret this whole deployment uses.
-# Created once by whoever deploys this app (see README) -- never entered
-# or stored by individual users.
-GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
-GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
 
 # Non-sensitive scope set on purpose -- avoids Google's "restricted scope"
 # security-assessment requirement that full drive access would trigger.
@@ -41,9 +36,10 @@ SCOPES_SECONDARY = [
 ]
 
 # Optional: only needed for the "Import from Drive" (Google Picker)
-# feature. A Picker API key doesn't grant access to anyone's files by
-# itself, it just identifies API traffic for quota purposes. Without it,
-# the Import button is simply hidden.
+# feature. This one IS shared across visitors deliberately -- unlike the
+# OAuth Client ID/Secret, a Picker API key doesn't grant access to
+# anyone's files by itself, it just identifies API traffic for quota
+# purposes. Without it, the Import button is simply hidden.
 GOOGLE_PICKER_API_KEY = os.environ.get("GOOGLE_PICKER_API_KEY", "")
 
 MAX_DRIVES_PER_USER = int(os.environ.get("MAX_DRIVES_PER_USER", 10))
@@ -61,3 +57,10 @@ MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 4))
 DRIVE_REQUEST_TIMEOUT = int(os.environ.get("DRIVE_REQUEST_TIMEOUT", 300))
 SESSION_COOKIE_NAME = "dv_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+PENDING_SETUP_COOKIE_NAME = "dv_pending_setup"
+
+# Separate from the session cookie so a returning user can skip retyping
+# their Client ID/Secret even after the session above has expired or been
+# cleared -- see session.py's remember-cookie functions for what it holds.
+REMEMBER_COOKIE_NAME = "dv_remember"
+REMEMBER_MAX_AGE = 60 * 60 * 24 * 365  # 1 year

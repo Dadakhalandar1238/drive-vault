@@ -46,14 +46,13 @@ def build_clients_and_vault(sess: dict) -> tuple[dict[str, DriveClient], dict]:
     """
     Returns (clients, vault) where clients is every connected drive for
     this user (primary + secondaries), keyed by google account id. All of
-    them authenticate through the one shared Google OAuth app in
-    config.py -- that one app can authorize as many different Google
-    accounts as it likes, so there's no need for a separate app per user
-    or per connected drive.
+    them share this one user's own Client ID/Secret -- one Google Cloud
+    OAuth app can authorize as many different Google accounts as it likes,
+    so there's no need for a separate app per connected drive.
     """
     primary_client = DriveClient(
         sess["refresh_token"], config.SCOPES_PRIMARY,
-        config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, account_key=sess["sub"],
+        sess["client_id"], sess["client_secret"], account_key=sess["sub"],
     )
     v = vault.load_vault(primary_client)
     vault.register_primary_account(v, sess["sub"], sess["email"])
@@ -64,7 +63,7 @@ def build_clients_and_vault(sess: dict) -> tuple[dict[str, DriveClient], dict]:
             continue
         clients[acct_id] = DriveClient(
             vault.decrypted_refresh_token(v, acct_id), config.SCOPES_SECONDARY,
-            config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, account_key=acct_id,
+            sess["client_id"], sess["client_secret"], account_key=acct_id,
         )
     return clients, v
 
@@ -73,7 +72,8 @@ def build_clients_and_vault(sess: dict) -> tuple[dict[str, DriveClient], dict]:
 # pages
 # ---------------------------------------------------------------------
 _ERROR_MESSAGES = {
-    "auth_failed": "Google couldn't complete sign-in -- please try again.",
+    "setup_expired": "Your setup session expired after 15 minutes of inactivity -- please fill in your Client ID and Client Secret again below.",
+    "auth_failed": "Google couldn't complete sign-in with those credentials -- double check your Client ID and Client Secret (typos are the most common cause) and try again.",
 }
 
 
@@ -82,8 +82,12 @@ def index(request: Request, error: str = ""):
     if get_current_session(request):
         return RedirectResponse("/dashboard")
 
+    remembered = session.read_remember_cookie(request.cookies.get(config.REMEMBER_COOKIE_NAME))
     return templates.TemplateResponse(request, "welcome.html", {
+        "redirect_uri_primary": str(request.url_for("oauth_callback")),
+        "redirect_uri_secondary": str(request.url_for("oauth_callback_secondary")),
         "error_message": _ERROR_MESSAGES.get(error, ""),
+        "remembered_email": remembered["email"] if remembered else "",
     })
 
 
@@ -173,7 +177,7 @@ def dashboard(request: Request, folder: str = ""):
         "num_drives": len(v["accounts"]),
         "max_drives": config.MAX_DRIVES_PER_USER,
         "can_add_drive": len(v["accounts"]) < config.MAX_DRIVES_PER_USER,
-        "google_client_id": config.GOOGLE_CLIENT_ID,
+        "google_client_id": sess["client_id"],
         "google_picker_api_key": config.GOOGLE_PICKER_API_KEY,
     })
 
@@ -190,17 +194,57 @@ def api_storage_overview(request: Request):
 
 
 # ---------------------------------------------------------------------
-# auth: sign in through the one shared Google OAuth app
+# auth: first-time setup + primary login
 # ---------------------------------------------------------------------
-@app.get("/login")
-def login(request: Request):
+def _redirect_to_google_login(request: Request, email: str, client_id: str, client_secret: str) -> RedirectResponse:
+    """Shared by /start-setup (freshly-typed credentials) and /continue
+    (credentials pulled from the remember cookie) -- both just need to kick
+    off the same OAuth round trip."""
     redirect_uri = str(request.url_for("oauth_callback"))
-    flow = auth.build_flow(
-        config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.SCOPES_PRIMARY,
-        redirect_uri, state=oauth_state.make_state("login"),
-    )
+    flow = auth.build_flow(client_id, client_secret, config.SCOPES_PRIMARY, redirect_uri, state=oauth_state.make_state("login"))
     url = auth.get_authorization_url(flow, force_account_chooser=False)
-    return RedirectResponse(url)
+
+    resp = RedirectResponse(url, status_code=303)
+    # Holds the credentials JUST long enough to survive the round trip to
+    # Google and back -- never written to disk, and cleared the moment
+    # /oauth/callback finishes with it.
+    cookie_value = session.create_pending_setup_cookie(email, client_id, client_secret)
+    resp.set_cookie(
+        config.PENDING_SETUP_COOKIE_NAME, cookie_value,
+        max_age=session.PENDING_SETUP_MAX_AGE, httponly=True, samesite="lax", secure=True,
+    )
+    return resp
+
+
+@app.post("/start-setup")
+def start_setup(request: Request, email: str = Form(""), client_id: str = Form(...), client_secret: str = Form(...)):
+    client_id = client_id.strip()
+    client_secret = client_secret.strip()
+    if not client_id or not client_secret:
+        raise HTTPException(400, "Client ID and Client Secret are both required.")
+    return _redirect_to_google_login(request, email.strip(), client_id, client_secret)
+
+
+@app.get("/continue")
+def continue_with_remembered(request: Request):
+    """One-click re-login for a returning user whose session has expired or
+    been cleared, using the Client ID/Secret saved in the remember cookie
+    instead of asking them to retype it."""
+    remembered = session.read_remember_cookie(request.cookies.get(config.REMEMBER_COOKIE_NAME))
+    if remembered is None:
+        return RedirectResponse("/")
+    return _redirect_to_google_login(request, remembered["email"], remembered["client_id"], remembered["client_secret"])
+
+
+@app.get("/forget-device")
+def forget_device():
+    """Clears the remember cookie (and any session) so the next visit shows
+    the full manual credential form again -- for a shared/borrowed browser,
+    or switching to a different Google Cloud project."""
+    resp = RedirectResponse("/")
+    resp.delete_cookie(config.REMEMBER_COOKIE_NAME)
+    resp.delete_cookie(config.SESSION_COOKIE_NAME)
+    return resp
 
 
 @app.get("/oauth/callback")
@@ -208,27 +252,48 @@ def oauth_callback(request: Request, code: str, state: str):
     if not oauth_state.verify_state(state, "login"):
         raise HTTPException(400, "Invalid or expired OAuth state")
 
+    pending = session.read_pending_setup_cookie(request.cookies.get(config.PENDING_SETUP_COOKIE_NAME))
+    if pending is None:
+        return RedirectResponse("/?error=setup_expired", status_code=303)
+
     redirect_uri = str(request.url_for("oauth_callback"))
-    flow = auth.build_flow(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.SCOPES_PRIMARY, redirect_uri, state=state)
+    flow = auth.build_flow(pending["client_id"], pending["client_secret"], config.SCOPES_PRIMARY, redirect_uri, state=state)
     try:
-        identity = auth.exchange_code_for_identity(flow, code, config.GOOGLE_CLIENT_ID)
+        identity = auth.exchange_code_for_identity(flow, code, pending["client_id"])
     except Exception:
         return RedirectResponse("/?error=auth_failed", status_code=303)
 
+    # Bootstrap the vault immediately so the encrypted backup of this
+    # user's own Client ID/Secret lives in their Drive from first sign-in.
     primary_client = DriveClient(
         identity["refresh_token"], config.SCOPES_PRIMARY,
-        config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, account_key=identity["sub"],
+        pending["client_id"], pending["client_secret"], account_key=identity["sub"],
     )
     v = vault.load_vault(primary_client)
     vault.register_primary_account(v, identity["sub"], identity["email"])
+    vault.set_oauth_client(v, pending["client_id"], pending["client_secret"])
     vault.save_vault(primary_client, v)
 
-    cookie_value = session.create_session_cookie(identity["sub"], identity["email"], identity["refresh_token"])
+    cookie_value = session.create_session_cookie(
+        identity["sub"], identity["email"], identity["refresh_token"],
+        pending["client_id"], pending["client_secret"],
+    )
     resp = RedirectResponse("/dashboard", status_code=303)
     resp.set_cookie(
         config.SESSION_COOKIE_NAME, cookie_value,
         max_age=config.SESSION_MAX_AGE, httponly=True, samesite="lax", secure=True,
     )
+    # Refreshed on every successful login (sliding 1-year expiry) so a
+    # returning user keeps getting the one-click /continue path instead of
+    # the credential form, for as long as they keep coming back.
+    remember_cookie_value = session.create_remember_cookie(
+        identity["email"], pending["client_id"], pending["client_secret"],
+    )
+    resp.set_cookie(
+        config.REMEMBER_COOKIE_NAME, remember_cookie_value,
+        max_age=config.REMEMBER_MAX_AGE, httponly=True, samesite="lax", secure=True,
+    )
+    resp.delete_cookie(config.PENDING_SETUP_COOKIE_NAME)
     return resp
 
 
@@ -240,14 +305,14 @@ def logout():
 
 
 # ---------------------------------------------------------------------
-# auth: add a secondary drive (reuses the one shared Google OAuth app --
-# it can authorize as many different Google accounts as needed)
+# auth: add a secondary drive (reuses the SAME Client ID/Secret already
+# on file for this session -- one Google Cloud app, many connected drives)
 # ---------------------------------------------------------------------
 @app.get("/connect-drive")
 def connect_drive(request: Request):
     sess = require_session(request)
     redirect_uri = str(request.url_for("oauth_callback_secondary"))
-    flow = auth.build_flow(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.SCOPES_SECONDARY, redirect_uri, state=oauth_state.make_state("secondary"))
+    flow = auth.build_flow(sess["client_id"], sess["client_secret"], config.SCOPES_SECONDARY, redirect_uri, state=oauth_state.make_state("secondary"))
     url = auth.get_authorization_url(flow, force_account_chooser=True)
     return RedirectResponse(url)
 
@@ -259,9 +324,9 @@ def oauth_callback_secondary(request: Request, code: str, state: str):
         raise HTTPException(400, "Invalid or expired OAuth state")
 
     redirect_uri = str(request.url_for("oauth_callback_secondary"))
-    flow = auth.build_flow(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, config.SCOPES_SECONDARY, redirect_uri, state=state)
+    flow = auth.build_flow(sess["client_id"], sess["client_secret"], config.SCOPES_SECONDARY, redirect_uri, state=state)
     try:
-        identity = auth.exchange_code_for_identity(flow, code, config.GOOGLE_CLIENT_ID)
+        identity = auth.exchange_code_for_identity(flow, code, sess["client_id"])
     except Exception:
         raise HTTPException(400, "Couldn't complete sign-in for that account -- please try again.")
 
@@ -270,7 +335,7 @@ def oauth_callback_secondary(request: Request, code: str, state: str):
 
     primary_client = DriveClient(
         sess["refresh_token"], config.SCOPES_PRIMARY,
-        config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, account_key=sess["sub"],
+        sess["client_id"], sess["client_secret"], account_key=sess["sub"],
     )
     v = vault.load_vault(primary_client)
     vault.register_primary_account(v, sess["sub"], sess["email"])

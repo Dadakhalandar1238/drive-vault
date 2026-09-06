@@ -1,90 +1,86 @@
 # Drive Vault — Project Overview
 
 Turns several Google Drive accounts into one pooled storage system, with
-**no database and no server-side per-user credential storage**. Deployed
-on Render's free tier. This document describes the codebase as it
-actually exists today (`app/`).
+**no database and no server-side credential storage**. Deployed on Render's
+free tier. This document describes the codebase as it actually exists today
+(`app/`), not just the original design conversation — the implementation has
+moved past that first design in a few important ways, noted below.
 
 ## Core idea
 
 Every Google account has a hidden `appDataFolder` — invisible in the normal
-Drive UI, readable only by the OAuth app that created it. That's where all
-"server" state actually lives:
+Drive UI, readable only by the app that created it. That's where all "server"
+state actually lives:
 
 - Each user's **vault** (an encrypted JSON blob) sits in their own primary
   account's `appDataFolder`.
-- The vault holds: connected secondary-drive refresh tokens (encrypted),
-  the virtual folder tree, and the file index (`path → which drive(s)/file
-  id(s)/chunk info`).
+- The vault holds: connected secondary-drive refresh tokens (encrypted), an
+  encrypted backup of the user's own OAuth Client ID/Secret, the virtual
+  folder tree, and the file index (`path → which drive(s)/file id(s)/chunk info`).
 - Nothing is shared or written to the server's disk — the server is fully
   stateless, which is exactly what a free host that spins containers up/down
   wants.
 
-## How the design evolved
+## How the design evolved from the original chat
 
-This went through two different auth models before landing where it is now:
+The original conversation assumed **one shared Google Cloud OAuth app**
+(a single Client ID/Secret configured once by whoever deploys the service),
+with `drive.file` + `drive.appdata` scopes. The codebase went a step further:
 
-1. **Original design:** one shared Google Cloud OAuth app, configured once
-   by whoever deploys the service.
-2. **Bring-your-own-OAuth (an intermediate version):** every user pasted in
-   their *own* Google Cloud Client ID/Secret through a guided onboarding
-   flow, so the deployer needed zero Google setup. This was reverted —
-   see below.
-3. **Back to one shared OAuth app (current):** [`app/config.py`](app/config.py)
-   requires `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` as server env vars,
-   set once by the deployer. Every route and `DriveClient` call uses them
-   directly; there's no per-user credential anywhere.
-
-**Why the reversion:** the bring-your-own model meant a user who lost their
-own Client ID/Secret would permanently lose access to their vault *and*
-their uploaded files — not just an inconvenience. Google's `appDataFolder`
-and `drive.file` scope are both scoped **per OAuth Client ID**, not per
-Google account: a different Client ID (even in the same Google Cloud
-project) is treated as a completely different application and gets a
-blank, empty `appDataFolder`, with no visibility into files the old
-Client ID created. There is no way to "look up" the old credentials from
-inside the vault to recover, either, since reading the vault itself
-requires already being authenticated with the very credentials you'd be
-trying to recover. A single shared OAuth app removes the failure mode
-entirely: nobody holds a credential they could lose, at the cost of one
-shared Drive API quota across all users and Google's ~100-user cap while
-the app stays in "Testing" mode (lifted by the standard, free OAuth
-verification review once you need more).
-
-Other, independent features added along the way (unaffected by the OAuth
-reversion):
+- **Bring-your-own-OAuth.** There is no global Client ID/Secret anywhere —
+  see [`app/config.py`](app/config.py:5). Every user pastes in their *own*
+  free Google Cloud project's credentials through a guided setup screen on
+  first visit ([`app/templates/welcome.html`](app/templates/welcome.html)),
+  computed redirect URIs and all. This means the person deploying the app
+  needs zero Google setup, and no one user's credentials ever touch another
+  user's session or the server's disk. `DriveClient`, `auth.build_flow`, and
+  every route take `client_id`/`client_secret` as explicit parameters — by
+  design, there's no fallback global value.
 - **Folders** (virtual, not real nested Drive folders — see
-  [`app/vault.py`](app/vault.py:1) docstring), plus multi-select batch delete.
-- **"Import from Drive"** via the client-side Google Picker widget
-  (optional, gated on a `GOOGLE_PICKER_API_KEY` env var), so users can pull
-  in files that already exist elsewhere in their Google accounts without
-  widening the app's own server-side OAuth scope.
-- **Access-token caching** ([`app/token_cache.py`](app/token_cache.py)),
-  in-memory, keyed by Google account id, so repeat requests within a
+  [`app/vault.py`](app/vault.py:1) docstring) were added, along with
+  multi-select batch delete.
+- **"Import from Drive"** was added via the client-side Google Picker widget
+  (optional, gated on a `GOOGLE_PICKER_API_KEY` env var) so users can pull in
+  files that already exist elsewhere in their Google accounts — without
+  widening the app's own OAuth scope to a Google-restricted one.
+- **Access-token caching** ([`app/token_cache.py`](app/token_cache.py)) was
+  added in-memory, keyed by Google account id, so repeat requests within a
   token's ~1 hour lifetime skip re-authenticating with Google entirely.
 
 ## Auth flow (as built)
 
-1. **Sign in** (`GET /login` in [`app/main.py`](app/main.py)): builds the
-   OAuth authorization URL directly from `config.GOOGLE_CLIENT_ID`/
-   `GOOGLE_CLIENT_SECRET` and redirects to Google. No form, no per-user
-   input at all.
+1. **First-time setup** (`POST /start-setup` in
+   [`app/main.py`](app/main.py:197)): user enters their own Client ID/Secret
+   (and optionally an email). These sit in a short-lived, encrypted
+   `dv_pending_setup` cookie (15 min TTL) just long enough to survive the
+   redirect to Google and back — never written to disk.
 2. **Google OAuth round trip** (`GET /oauth/callback`): exchanges the code
-   for identity + refresh token, bootstraps the vault, and issues the
-   session cookie (`dv_session`, 30-day TTL). That becomes the user's
-   primary-account identity going forward.
+   for identity + refresh token, bootstraps the vault, stores an encrypted
+   backup of the Client ID/Secret inside it (`vault.set_oauth_client`), and
+   issues the real session cookie (`dv_session`, 30-day TTL). That becomes
+   the user's primary-account identity going forward.
 3. **Adding a secondary drive** (`GET /connect-drive` →
-   `GET /oauth/callback/secondary`): repeats OAuth using the same shared
-   app, authorizing another of the user's own Google accounts, up to
+   `GET /oauth/callback/secondary`): repeats OAuth using the *same*
+   Client ID/Secret already on file for the session — one small Google Cloud
+   project authorizes as many of the user's own accounts as needed, up to
    `MAX_DRIVES_PER_USER` (default 10).
 4. **Session = stateless signed+encrypted cookie**
-   ([`app/session.py`](app/session.py)) holding just `sub`, `email`, and
-   the (encrypted) refresh token. Any server instance can serve any
-   request from the cookie alone. There's no separate "pending setup" or
-   "remember this device" cookie (both existed briefly during the
-   bring-your-own era) — since there's no per-user secret to carry through
-   a redirect or remember across a lost session, re-authenticating is
-   always just a single "Sign in with Google" click, session or no session.
+   ([`app/session.py`](app/session.py)) holding `sub`, `email`, the
+   (encrypted) refresh token, and the (encrypted) Client Secret. Any server
+   instance can serve any request from the cookie alone.
+5. **Remembered device (added after initial build):** a second, separate
+   cookie (`dv_remember`, 1-year TTL) carries the same Client ID/Secret as
+   the session cookie but outlives it. It's set/refreshed on every
+   successful `/oauth/callback`. When the session expires or is cleared,
+   `GET /` detects this cookie and shows a one-click "Continue to Google
+   Sign-In" (`GET /continue`) instead of the manual credential form —
+   `_redirect_to_google_login()` in [`app/main.py`](app/main.py) is shared
+   between `/start-setup` and `/continue` so both paths funnel into the
+   same OAuth kickoff. `GET /forget-device` clears both cookies. This
+   exists because Google's refresh-token grant still requires the original
+   client_id/client_secret to redeem — there is no way to recover a lost
+   session's refresh token without them, so remembering the credentials
+   themselves (not the refresh token) is what makes repeat logins painless.
 5. **CSRF protection on the OAuth `state` param**
    ([`app/oauth_state.py`](app/oauth_state.py)) is done by signing it with
    `SECRET_KEY` rather than comparing against server-side state, since there
@@ -92,11 +88,11 @@ reversion):
 
 ## Encryption ([`app/crypto.py`](app/crypto.py))
 
-Every sensitive value — refresh tokens, the whole vault blob — is
-Fernet-encrypted (key derived via SHA-256 of `SECRET_KEY`) before it's
-ever written into a cookie or into the Drive `appDataFolder`. Signing
-alone (which `itsdangerous` also provides, for tamper-detection) doesn't
-stop someone from reading a value straight out of a cookie; encryption does.
+Every sensitive value — refresh tokens, Client Secret, the whole vault
+blob — is Fernet-encrypted (key derived via SHA-256 of `SECRET_KEY`) before
+it's ever written into a cookie or into the Drive `appDataFolder`. Signing
+alone (which `itsdangerous` also provides, for tamper-detection) doesn't stop
+someone from reading a value straight out of a cookie; encryption does.
 
 ## Storage distribution ([`app/distributor.py`](app/distributor.py))
 
@@ -151,9 +147,9 @@ Picker widget instead of a broader read scope.
 | File | Responsibility |
 |---|---|
 | [`app/main.py`](app/main.py) | FastAPI routes: pages, auth, upload/download/delete, folders |
-| [`app/config.py`](app/config.py) | Env-driven settings, including the shared `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` |
-| [`app/auth.py`](app/auth.py) | Google OAuth2 flow helpers (client_id/secret passed in, always the shared app's) |
-| [`app/session.py`](app/session.py) | Signed+encrypted session cookie (sub/email/refresh_token only) |
+| [`app/config.py`](app/config.py) | Env-driven settings; no global OAuth credentials |
+| [`app/auth.py`](app/auth.py) | Google OAuth2 flow (per-user client id/secret) |
+| [`app/session.py`](app/session.py) | Signed+encrypted session & pending-setup cookies |
 | [`app/oauth_state.py`](app/oauth_state.py) | Signed CSRF state for the OAuth redirect |
 | [`app/crypto.py`](app/crypto.py) | Fernet encrypt/decrypt helpers |
 | [`app/vault.py`](app/vault.py) | The "database": vault schema, folder tree, file index |
@@ -161,7 +157,7 @@ Picker widget instead of a broader read scope.
 | [`app/distributor.py`](app/distributor.py) | Chunk-planning + parallel upload/download/delete |
 | [`app/workers.py`](app/workers.py) | `ThreadPoolExecutor` helpers |
 | [`app/token_cache.py`](app/token_cache.py) | In-memory access-token cache, keyed by Google sub |
-| [`app/templates/`](app/templates/) | `welcome.html` (single "Sign in with Google" button), `dashboard.html` (main UI) |
+| [`app/templates/`](app/templates/) | `welcome.html` (onboarding), `dashboard.html` (main UI) |
 
 ## Known limitations (from the README, still current)
 
@@ -172,18 +168,20 @@ Picker widget instead of a broader read scope.
   is scoped but not built.
 - **No file versioning** — re-uploading the same name overwrites the index
   entry; the old Drive object is orphaned rather than reused/deleted.
-- **Google's ~100-user Testing-mode cap** applies to the whole deployment
-  (not per-user, since everyone shares one OAuth app) until the deployer
-  publishes it via Google's standard OAuth verification.
+- **Session recovery is per-browser-cookie only** — no cross-device account
+  system, no email/password recovery, since there's no database by design.
+  The remembered-device cookie reduces a lapsed session (on the *same*
+  browser) to a one-click continue, but a genuinely new browser/device
+  still needs the Client ID/Secret typed in once.
 
 ## Tests (`tests/`, offline — no network/Google credentials needed)
 
 `test_logic.py`, `test_thread_safety.py`, `test_token_cache.py`,
 `test_folders.py`, `test_folder_and_batch_routes.py`,
-`test_session_and_vault.py`, `test_onboarding_flow.py`,
-`test_dashboard_render.py`, `test_upload_concurrency_regression.py` —
-cover encryption round-trips, session/cookie handling, chunk-planning
-math, folder path logic, and the shared-OAuth-app login flow.
+`test_byo_oauth_credentials.py`, `test_onboarding_flow.py`,
+`test_dashboard_render.py`, `test_upload_concurrency_regression.py` — cover
+encryption round-trips, session/cookie handling, chunk-planning math, folder
+path logic, and the bring-your-own-OAuth onboarding flow.
 
 Run with:
 ```bash
