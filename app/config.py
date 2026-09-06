@@ -58,3 +58,9 @@ DRIVE_REQUEST_TIMEOUT = int(os.environ.get("DRIVE_REQUEST_TIMEOUT", 300))
 SESSION_COOKIE_NAME = "dv_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 PENDING_SETUP_COOKIE_NAME = "dv_pending_setup"
+
+# Separate from the session cookie so a returning user can skip retyping
+# their Client ID/Secret even after the session above has expired or been
+# cleared -- see session.py's remember-cookie functions for what it holds.
+REMEMBER_COOKIE_NAME = "dv_remember"
+REMEMBER_MAX_AGE = 60 * 60 * 24 * 365  # 1 year

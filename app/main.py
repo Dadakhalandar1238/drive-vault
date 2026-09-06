@@ -82,10 +82,12 @@ def index(request: Request, error: str = ""):
     if get_current_session(request):
         return RedirectResponse("/dashboard")
 
+    remembered = session.read_remember_cookie(request.cookies.get(config.REMEMBER_COOKIE_NAME))
     return templates.TemplateResponse(request, "welcome.html", {
         "redirect_uri_primary": str(request.url_for("oauth_callback")),
         "redirect_uri_secondary": str(request.url_for("oauth_callback_secondary")),
         "error_message": _ERROR_MESSAGES.get(error, ""),
+        "remembered_email": remembered["email"] if remembered else "",
     })
 
 
@@ -194,26 +196,54 @@ def api_storage_overview(request: Request):
 # ---------------------------------------------------------------------
 # auth: first-time setup + primary login
 # ---------------------------------------------------------------------
+def _redirect_to_google_login(request: Request, email: str, client_id: str, client_secret: str) -> RedirectResponse:
+    """Shared by /start-setup (freshly-typed credentials) and /continue
+    (credentials pulled from the remember cookie) -- both just need to kick
+    off the same OAuth round trip."""
+    redirect_uri = str(request.url_for("oauth_callback"))
+    flow = auth.build_flow(client_id, client_secret, config.SCOPES_PRIMARY, redirect_uri, state=oauth_state.make_state("login"))
+    url = auth.get_authorization_url(flow, force_account_chooser=False)
+
+    resp = RedirectResponse(url, status_code=303)
+    # Holds the credentials JUST long enough to survive the round trip to
+    # Google and back -- never written to disk, and cleared the moment
+    # /oauth/callback finishes with it.
+    cookie_value = session.create_pending_setup_cookie(email, client_id, client_secret)
+    resp.set_cookie(
+        config.PENDING_SETUP_COOKIE_NAME, cookie_value,
+        max_age=session.PENDING_SETUP_MAX_AGE, httponly=True, samesite="lax", secure=True,
+    )
+    return resp
+
+
 @app.post("/start-setup")
 def start_setup(request: Request, email: str = Form(""), client_id: str = Form(...), client_secret: str = Form(...)):
     client_id = client_id.strip()
     client_secret = client_secret.strip()
     if not client_id or not client_secret:
         raise HTTPException(400, "Client ID and Client Secret are both required.")
+    return _redirect_to_google_login(request, email.strip(), client_id, client_secret)
 
-    redirect_uri = str(request.url_for("oauth_callback"))
-    flow = auth.build_flow(client_id, client_secret, config.SCOPES_PRIMARY, redirect_uri, state=oauth_state.make_state("login"))
-    url = auth.get_authorization_url(flow, force_account_chooser=False)
 
-    resp = RedirectResponse(url, status_code=303)
-    # Holds the freshly-entered credentials JUST long enough to survive the
-    # round trip to Google and back -- never written to disk, and cleared
-    # the moment /oauth/callback finishes with it.
-    cookie_value = session.create_pending_setup_cookie(email.strip(), client_id, client_secret)
-    resp.set_cookie(
-        config.PENDING_SETUP_COOKIE_NAME, cookie_value,
-        max_age=session.PENDING_SETUP_MAX_AGE, httponly=True, samesite="lax", secure=True,
-    )
+@app.get("/continue")
+def continue_with_remembered(request: Request):
+    """One-click re-login for a returning user whose session has expired or
+    been cleared, using the Client ID/Secret saved in the remember cookie
+    instead of asking them to retype it."""
+    remembered = session.read_remember_cookie(request.cookies.get(config.REMEMBER_COOKIE_NAME))
+    if remembered is None:
+        return RedirectResponse("/")
+    return _redirect_to_google_login(request, remembered["email"], remembered["client_id"], remembered["client_secret"])
+
+
+@app.get("/forget-device")
+def forget_device():
+    """Clears the remember cookie (and any session) so the next visit shows
+    the full manual credential form again -- for a shared/borrowed browser,
+    or switching to a different Google Cloud project."""
+    resp = RedirectResponse("/")
+    resp.delete_cookie(config.REMEMBER_COOKIE_NAME)
+    resp.delete_cookie(config.SESSION_COOKIE_NAME)
     return resp
 
 
@@ -252,6 +282,16 @@ def oauth_callback(request: Request, code: str, state: str):
     resp.set_cookie(
         config.SESSION_COOKIE_NAME, cookie_value,
         max_age=config.SESSION_MAX_AGE, httponly=True, samesite="lax", secure=True,
+    )
+    # Refreshed on every successful login (sliding 1-year expiry) so a
+    # returning user keeps getting the one-click /continue path instead of
+    # the credential form, for as long as they keep coming back.
+    remember_cookie_value = session.create_remember_cookie(
+        identity["email"], pending["client_id"], pending["client_secret"],
+    )
+    resp.set_cookie(
+        config.REMEMBER_COOKIE_NAME, remember_cookie_value,
+        max_age=config.REMEMBER_MAX_AGE, httponly=True, samesite="lax", secure=True,
     )
     resp.delete_cookie(config.PENDING_SETUP_COOKIE_NAME)
     return resp

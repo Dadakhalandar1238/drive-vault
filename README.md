@@ -44,10 +44,13 @@ next request; fine for a personal tool).
 2. Paste your Client ID and Secret into the form and continue — this
    kicks off Google's normal sign-in screen, using *your own* OAuth app.
 3. From then on, that's your identity. Anyone who already has a signed-in
-   session in their browser skips straight to the dashboard; if that
-   session ever expires, signing in again just means re-entering the same
-   Client ID/Secret you set up before (treat it like a password — save it
-   somewhere, e.g. a password manager).
+   session in their browser skips straight to the dashboard. Once your
+   session eventually expires (or you clear cookies), you won't be asked
+   to retype your Client ID/Secret either — the same browser shows a
+   one-click **Continue to Google Sign-In** button instead, using a
+   separate, longer-lived (1 year) remembered-device cookie. "Not you? Use
+   a different Google account" on that screen clears it if you ever need
+   the manual form again (shared computer, switching projects, etc.).
 4. On the dashboard, **Connect another drive** adds up to 9 more Google
    accounts — using the *same* Client ID/Secret you already entered, since
    one small Google Cloud project can authorize as many of your own
@@ -71,12 +74,14 @@ next request; fine for a personal tool).
 
 - **The server never stores your Client ID/Secret anywhere at rest.**
   There's no database, and nothing is written to the server's disk. Your
-  credentials exist in exactly two places: an encrypted, signed cookie in
-  your own browser (so you don't have to retype them every visit), and an
-  encrypted blob inside your own Google Drive's hidden `appDataFolder`
-  (so a copy survives even if you clear cookies — restoring it still
-  requires you to re-enter your Client ID/Secret once, since reading your
-  Drive requires being authenticated to it first).
+  credentials exist in exactly three places, all in your own browser or
+  your own Drive: the session cookie (30 days), a separate longer-lived
+  "remember this device" cookie (1 year, so a lapsed session doesn't force
+  you back to the manual form), and an encrypted blob inside your own
+  Google Drive's hidden `appDataFolder` (so a copy survives even if you
+  clear cookies entirely — restoring it still requires you to re-enter
+  your Client ID/Secret once, since reading your Drive requires being
+  authenticated to it first).
 - While you're mid-setup (after submitting the form, before Google
   redirects you back), your credentials sit briefly in a short-lived
   cookie that expires after 15 minutes and is deleted the moment setup
@@ -129,6 +134,15 @@ PYTHONPATH=. python -m pytest tests/ -q
 - **Stateless server.** Login sessions are a signed, encrypted cookie —
   not a server-side session. Any instance can serve any request, which is
   exactly what a free tier that spins containers up/down wants.
+- **Remembered-device cookie.** A second, separate encrypted cookie
+  (`dv_remember`, 1-year TTL) carries the same Client ID/Secret as the
+  session cookie but outlives it, since Google's refresh-token grant still
+  requires the original client_id/client_secret to redeem — there's no way
+  to recover a lost session's refresh token without them. It's set (and
+  refreshed) on every successful `/oauth/callback`, and checked by `/` to
+  decide whether to show the manual credential form or a one-click
+  "Continue to Google Sign-In" (`/continue`) that skips straight to
+  Google's consent screen. `/forget-device` clears both cookies.
 - **Scoped access only.** The app requests `drive.file` (only files it
   creates) and `drive.appdata` (its own hidden config), not full Drive
   access — this avoids Google's costly "restricted scope" security
@@ -181,7 +195,9 @@ PYTHONPATH=. python -m pytest tests/ -q
   all) is a real, scoped piece of work — say the word and I'll build it.
 - No file versioning yet — re-uploading the same name overwrites the
   index entry (the old Drive object becomes orphaned rather than reused).
-- "Existing user" recognition is per-browser-session (a cookie), not a
-  cross-device account system, since there's no database. If you lose
-  your session (new browser, cleared cookies) you re-enter your Client
-  ID/Secret once — there's no email/password recovery flow, by design.
+- "Existing user" recognition is per-browser (cookies), not a
+  cross-device account system, since there's no database. The
+  remembered-device cookie means a lapsed session on the *same* browser
+  reduces to a one-click continue, but a genuinely new browser or device
+  still needs the Client ID/Secret typed in once — there's no
+  email/password recovery flow, by design.

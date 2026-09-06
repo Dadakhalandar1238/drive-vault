@@ -25,6 +25,20 @@
       <div class="banner banner-error">{{ error_message }}</div>
     {% endif %}
 
+    {% if remembered_email %}
+      <div class="card">
+        <p class="section-title">Welcome back</p>
+        <p class="muted-p">
+          Continue with the Google Cloud project you already set up{% if remembered_email %} ({{ remembered_email }}){% endif %} &mdash;
+          no need to re-enter your Client ID or Secret.
+        </p>
+        <a class="btn" href="/continue" id="continueRememberedBtn">Continue to Google Sign-In</a>
+        <p class="muted-p" style="margin-top:10px;">
+          <a href="/forget-device">Not you? Use a different Google account</a>
+        </p>
+      </div>
+    {% endif %}
+
     <div class="card security-callout">
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect x="4" y="9" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
