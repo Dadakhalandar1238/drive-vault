@@ -123,7 +123,7 @@ resource "oci_core_instance" "app" {
   }
 
   metadata = {
-    ssh_authorized_keys = file(var.ssh_public_key_path)
+    ssh_authorized_keys = file(pathexpand(var.ssh_public_key_path))
     user_data = base64encode(templatefile("${path.module}/cloud-init.sh.tftpl", {
       repo_url              = var.repo_url
       git_ref               = var.git_ref
