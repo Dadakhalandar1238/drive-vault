@@ -6,12 +6,18 @@ own primary Drive (in the hidden `appDataFolder`). Multi-user by design:
 anyone can sign in and connect up to 10 of their own drives; nothing is
 ever shared between users.
 
-**Nobody shares Google credentials.** This app has no Google API access
-of its own. Each person who signs in brings their own free Google Cloud
-project (their own Client ID/Secret) through a guided setup screen built
-into the app — the person deploying this doesn't need a Google Cloud
-project at all, and nobody's Client ID or Secret is ever stored on the
-server. See "How credentials are handled" below for exactly what that means.
+**One shared Google OAuth app serves everyone.** The person deploying this
+app creates a single Google Cloud OAuth Client ID/Secret once (see the
+setup guide below) and configures it as an environment variable. Every
+user just clicks "Sign in with Google" — nobody ever sees, enters, or has
+to safeguard a Client ID/Secret. This is a deliberate trade-off: earlier
+versions of this app had each user bring their own OAuth app, but losing
+that credential turned out to permanently orphan that person's vault and
+files (Google's `appDataFolder` and `drive.file` access are both scoped
+per OAuth Client ID, not per Google account — a new Client ID can't see
+what an old one created). A single shared app removes that risk entirely,
+at the cost of one shared Drive API quota across all users of this
+deployment, and needing the deployer to own one small Google Cloud project.
 
 **How it decides where files go:** on upload, it checks free space on all
 your connected drives in parallel, then puts the file on whichever has the
@@ -21,14 +27,37 @@ concurrently. Downloads fetch all chunks in parallel and reassemble them.
 
 ---
 
+## One-time setup: create the shared Google OAuth app
+
+Do this once, before deploying (or before your first local run).
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com), create a new project (any name).
+2. **APIs & Services → Library** → search **Google Drive API** → **Enable**.
+3. **APIs & Services → Google Auth Platform → Get started.**
+   - App name: anything. User support email: yours.
+   - Audience: **External**. While the app stays in **Testing** mode (the
+     default), only the test users you list here can sign in — up to 100.
+     If you expect more than ~100 people to use this deployment, you'll
+     eventually need to publish the app, which requires Google's standard
+     (free, non-restricted) OAuth verification review.
+   - On **Data access**, add scopes `drive.file` and `drive.appdata`.
+4. **Clients** tab → **Create Client** → **Web application**.
+   - Under **Authorized redirect URIs**, add both, replacing the host with
+     wherever you'll deploy (or `localhost:8000` for local dev):
+     ```
+     https://YOUR-DEPLOYED-HOST/oauth/callback
+     https://YOUR-DEPLOYED-HOST/oauth/callback/secondary
+     ```
+   - Click **Create**, then copy the **Client ID** and **Client Secret** —
+     the secret is only ever shown once.
+
+You'll paste both into the deploy step below (or your local `.env`).
+
 ## Deploy to Render (free, no credit card)
 
-There is nothing Google-related to configure before deploying — that
-happens per-user, in the app itself, after it's live.
-
 1. Push this folder to a GitHub repo.
-2. Go to [render.com](https://render.com) → sign up (email only, no card) → **New → Blueprint** → connect your repo. Render reads `render.yaml` automatically and generates `SECRET_KEY` for you.
-3. Deploy. That's it — the only required environment variable is `SECRET_KEY`, and the blueprint already generates one.
+2. Go to [render.com](https://render.com) → sign up (email only, no card) → **New → Blueprint** → connect your repo. Render reads `render.yaml` automatically, generates `SECRET_KEY` for you, and prompts you for `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
+3. Paste in the Client ID/Secret from the setup above, then deploy.
 
 The service is free forever on Render's free web tier (it spins down
 after ~15 minutes of no traffic and takes ~30–50s to wake back up on the
@@ -36,64 +65,48 @@ next request; fine for a personal tool).
 
 ## Using it (what each person sees)
 
-1. Visit your deployed URL. If you're new, you'll land on a setup screen
-   with a step-by-step guide to creating a free Google Cloud project and
-   getting a Client ID/Secret — the exact redirect URIs to paste in are
-   shown for you, computed from your actual deployed URL, so there's no
-   guessing. Takes about 10 minutes, once.
-2. Paste your Client ID and Secret into the form and continue — this
-   kicks off Google's normal sign-in screen, using *your own* OAuth app.
-3. From then on, that's your identity. Anyone who already has a signed-in
-   session in their browser skips straight to the dashboard. Once your
-   session eventually expires (or you clear cookies), you won't be asked
-   to retype your Client ID/Secret either — the same browser shows a
-   one-click **Continue to Google Sign-In** button instead, using a
-   separate, longer-lived (1 year) remembered-device cookie. "Not you? Use
-   a different Google account" on that screen clears it if you ever need
-   the manual form again (shared computer, switching projects, etc.).
-4. On the dashboard, **Connect another drive** adds up to 9 more Google
-   accounts — using the *same* Client ID/Secret you already entered, since
-   one small Google Cloud project can authorize as many of your own
-   accounts as you like.
-5. Drag files into the upload form — they're distributed across your
+1. Visit your deployed URL and click **Sign in with Google**.
+2. From then on, that's your identity. A signed-in session lasts 30 days;
+   after that (or if you clear cookies), signing in again is still just
+   one click — there's nothing to remember or retype.
+3. On the dashboard, **Connect another drive** adds up to 9 more Google
+   accounts of your own into the same pool.
+4. Drag files into the upload form — they're distributed across your
    drives automatically.
-6. **Folders**: click **+ New folder** to create one, click into it to
+5. **Folders**: click **+ New folder** to create one, click into it to
    navigate, and anything you upload while inside a folder lands there.
    Folders are a purely virtual/app-level concept — see the architecture
    notes below for what that means in practice.
-7. **Multi-delete**: check the boxes next to files and click **Delete
+6. **Multi-delete**: check the boxes next to files and click **Delete
    selected** to remove several at once.
-8. **Import from Drive**: if the deployer set up `GOOGLE_PICKER_API_KEY`,
+7. **Import from Drive**: if the deployer set up `GOOGLE_PICKER_API_KEY`,
    this button opens Google's own file browser so you can pull in files
    that already exist in any of your Google accounts (not just files this
    app created).
-9. Download/delete from the file table; both work no matter which
+8. Download/delete from the file table; both work no matter which
    drive(s) a file actually lives on.
 
-## How credentials are handled (read this if you're not sure it's safe)
+## How this stays safe (read this if you're not sure)
 
-- **The server never stores your Client ID/Secret anywhere at rest.**
-  There's no database, and nothing is written to the server's disk. Your
-  credentials exist in exactly three places, all in your own browser or
-  your own Drive: the session cookie (30 days), a separate longer-lived
-  "remember this device" cookie (1 year, so a lapsed session doesn't force
-  you back to the manual form), and an encrypted blob inside your own
-  Google Drive's hidden `appDataFolder` (so a copy survives even if you
-  clear cookies entirely — restoring it still requires you to re-enter
-  your Client ID/Secret once, since reading your Drive requires being
-  authenticated to it first).
-- While you're mid-setup (after submitting the form, before Google
-  redirects you back), your credentials sit briefly in a short-lived
-  cookie that expires after 15 minutes and is deleted the moment setup
-  finishes.
-- Every sensitive value — refresh tokens, your Client Secret — is
-  encrypted (via `SECRET_KEY`) before it's ever written into a cookie or
-  the vault. Signing alone (which the app also does, to detect tampering)
-  wouldn't stop someone from reading the value; encryption does.
-- The one thing that's genuinely global to this deployment is
-  `SECRET_KEY` itself, which the person running the server controls. It's
-  used only to encrypt/sign cookies and vault contents — it can't be used
-  to access anyone's Drive by itself.
+- **Nothing is stored on the server, ever.** No database, nothing written
+  to disk. Your login session is a signed, encrypted cookie in your
+  browser (30 days); your file index and connected-drive list live
+  encrypted inside your own Google Drive's hidden `appDataFolder`.
+- **Scoped access only.** The shared app requests `drive.file` (only
+  files it creates) and `drive.appdata` (its own hidden config) — never
+  your existing Drive contents, and never the costly "restricted scope"
+  security assessment that full `drive` access would require.
+- Every sensitive value — refresh tokens — is encrypted (via
+  `SECRET_KEY`) before it's ever written into a cookie or the vault.
+  Signing alone (which the app also does, to detect tampering) wouldn't
+  stop someone from reading the value; encryption does.
+- The two things that are genuinely global to this deployment are
+  `SECRET_KEY` (encrypts/signs cookies and vault contents) and the shared
+  `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` (the one OAuth app everyone
+  authenticates through). The person running the server controls all
+  three; none of them by themselves grant access to any specific user's
+  Drive without also having that user's refresh token, which never leaves
+  their own cookie/vault.
 
 ---
 
@@ -102,15 +115,17 @@ next request; fine for a personal tool).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # only SECRET_KEY is required; generate one with:
+cp .env.example .env   # fill in GOOGLE_CLIENT_ID/SECRET (see setup guide above)
+                        # and SECRET_KEY, generated with:
                         #   python -c "import secrets; print(secrets.token_urlsafe(32))"
 export $(grep -v '^#' .env | xargs)
 uvicorn app.main:app --reload
 ```
 
-Visit `http://localhost:8000` and follow the in-app setup guide the same
-way a deployed user would — the redirect URIs it shows you will correctly
-say `http://localhost:8000/...`.
+Visit `http://localhost:8000` and click **Sign in with Google** — make
+sure `http://localhost:8000/oauth/callback` and
+`http://localhost:8000/oauth/callback/secondary` are both in your OAuth
+client's authorized redirect URIs.
 
 Run the offline tests (no Google credentials or network needed):
 ```bash
@@ -119,34 +134,21 @@ PYTHONPATH=. python -m pytest tests/ -q
 
 ## Architecture notes
 
-- **No database, anywhere.** Each user's vault (connected-drive tokens,
-  their own OAuth Client ID/Secret backup, and file index) is an
-  encrypted JSON blob stored in their own primary account's
-  `appDataFolder` — invisible in their normal Drive UI, and readable only
-  by this app.
-- **Bring-your-own OAuth app.** Every user supplies their own Google
-  Cloud Client ID/Secret through a guided setup flow. A short-lived
-  encrypted cookie carries those credentials through the OAuth redirect
-  round trip; the resulting session cookie carries them for as long as
-  the session lasts. `DriveClient`, `auth.build_flow`, and every route
-  take client_id/client_secret as explicit parameters — there is no
-  global config value to fall back to, by design.
+- **No database, anywhere.** Each user's vault (connected-drive tokens
+  and file index) is an encrypted JSON blob stored in their own primary
+  account's `appDataFolder` — invisible in their normal Drive UI, and
+  readable only by this app's OAuth Client ID.
+- **One shared OAuth app.** `config.py` holds `GOOGLE_CLIENT_ID` /
+  `GOOGLE_CLIENT_SECRET` as required environment variables; every route
+  and `DriveClient` call uses them directly rather than taking per-user
+  credentials as parameters. This is why the session cookie only needs to
+  carry `sub`/`email`/`refresh_token` — there's no per-user secret to
+  encrypt alongside them, and no separate "remember this device" cookie
+  is needed either, since re-authenticating is always a single "Sign in
+  with Google" click regardless of how long ago the session expired.
 - **Stateless server.** Login sessions are a signed, encrypted cookie —
   not a server-side session. Any instance can serve any request, which is
   exactly what a free tier that spins containers up/down wants.
-- **Remembered-device cookie.** A second, separate encrypted cookie
-  (`dv_remember`, 1-year TTL) carries the same Client ID/Secret as the
-  session cookie but outlives it, since Google's refresh-token grant still
-  requires the original client_id/client_secret to redeem — there's no way
-  to recover a lost session's refresh token without them. It's set (and
-  refreshed) on every successful `/oauth/callback`, and checked by `/` to
-  decide whether to show the manual credential form or a one-click
-  "Continue to Google Sign-In" (`/continue`) that skips straight to
-  Google's consent screen. `/forget-device` clears both cookies.
-- **Scoped access only.** The app requests `drive.file` (only files it
-  creates) and `drive.appdata` (its own hidden config), not full Drive
-  access — this avoids Google's costly "restricted scope" security
-  assessment that full `drive` access would require.
 - **Concurrency.** All Drive REST calls are I/O-bound, so a
   `ThreadPoolExecutor` gives real parallelism despite Python's GIL —
   used for free-space checks across all drives, and for uploading/
@@ -195,9 +197,9 @@ PYTHONPATH=. python -m pytest tests/ -q
   all) is a real, scoped piece of work — say the word and I'll build it.
 - No file versioning yet — re-uploading the same name overwrites the
   index entry (the old Drive object becomes orphaned rather than reused).
-- "Existing user" recognition is per-browser (cookies), not a
-  cross-device account system, since there's no database. The
-  remembered-device cookie means a lapsed session on the *same* browser
-  reduces to a one-click continue, but a genuinely new browser or device
-  still needs the Client ID/Secret typed in once — there's no
-  email/password recovery flow, by design.
+- While the shared OAuth app stays in Google's default **Testing** mode,
+  only up to 100 test users (added manually in Google Cloud Console) can
+  sign in at all. Growing past that requires publishing the app, which
+  needs Google's standard OAuth verification (free, but a review queue —
+  not the paid "restricted scope" security assessment, since this app's
+  scopes don't require that tier).

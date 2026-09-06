@@ -7,6 +7,8 @@ correctly without touching the network, using pytest's monkeypatch fixture.
 import os
 
 os.environ.setdefault("SECRET_KEY", "unit-test-secret-key")
+os.environ.setdefault("GOOGLE_CLIENT_ID", "unit-test-client-id")
+os.environ.setdefault("GOOGLE_CLIENT_SECRET", "unit-test-client-secret")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -69,7 +71,7 @@ def test_dashboard_renders_instantly_without_waiting_on_quota_checks(client):
     original = distributor_module.get_storage_overview
     distributor_module.get_storage_overview = boom
     try:
-        cookie = session.create_session_cookie("sub-primary", "me@example.com", "fake-refresh-token", "test-client-id", "test-client-secret")
+        cookie = session.create_session_cookie("sub-primary", "me@example.com", "fake-refresh-token")
         client.cookies.set(config.SESSION_COOKIE_NAME, cookie)
         resp = client.get("/dashboard")
         assert resp.status_code == 200, resp.text
@@ -107,7 +109,7 @@ def test_dashboard_renders_instantly_without_waiting_on_quota_checks(client):
 
 
 def test_storage_overview_api_returns_correct_pool_and_tank_math(client):
-    cookie = session.create_session_cookie("sub-primary", "me@example.com", "fake-refresh-token", "test-client-id", "test-client-secret")
+    cookie = session.create_session_cookie("sub-primary", "me@example.com", "fake-refresh-token")
     client.cookies.set(config.SESSION_COOKIE_NAME, cookie)
 
     resp = client.get("/api/storage-overview")
