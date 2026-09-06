@@ -1,0 +1,98 @@
+#!/bin/bash
+# Runs once, at first boot, as root (via cloud-init). Logs to
+# /var/log/cloud-init-output.log on the instance if anything needs
+# debugging.
+set -euxo pipefail
+
+# ---- packages ----------------------------------------------------
+apt-get update -y
+apt-get install -y ca-certificates curl git
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  > /etc/apt/sources.list.d/docker.list
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
+
+# ---- open the local firewall (OCI's security list also needs 80/443,
+# already handled by Terraform -- this is the instance's own iptables) --
+iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+netfilter-persistent save 2>/dev/null || true
+
+# ---- app source ----------------------------------------------------
+mkdir -p /opt/drive-vault
+cd /opt/drive-vault
+if [ ! -d .git ]; then
+  git clone --branch "${git_ref}" --depth 1 "${repo_url}" .
+else
+  git fetch --depth 1 origin "${git_ref}"
+  git reset --hard FETCH_HEAD
+fi
+
+# ---- domain for the TLS cert ----------------------------------------
+# A user-supplied domain (pointed at this instance via your own DNS A
+# record) is used if given; otherwise a free nip.io hostname derived
+# from this instance's own public IP needs no DNS setup at all.
+DOMAIN="${domain}"
+if [ -z "$DOMAIN" ]; then
+  PUBLIC_IP="$(curl -s https://ifconfig.me)"
+  DOMAIN="$(echo "$PUBLIC_IP" | tr '.' '-').nip.io"
+fi
+echo "$DOMAIN" > /opt/drive-vault/.deployed_domain
+
+# ---- app config (root-only permissions; never logged) ---------------
+cat > /opt/drive-vault/.env <<ENV
+SECRET_KEY=${secret_key}
+GOOGLE_PICKER_API_KEY=${google_picker_api_key}
+MAX_DRIVES_PER_USER=${max_drives_per_user}
+MAX_WORKERS=${max_workers}
+ENV
+chmod 600 /opt/drive-vault/.env
+
+# ---- Caddy: automatic HTTPS via Let's Encrypt ------------------------
+cat > /opt/drive-vault/Caddyfile <<CADDY
+$DOMAIN {
+  reverse_proxy drive-vault:8000
+}
+CADDY
+
+# ---- docker compose: the app + its TLS-terminating reverse proxy ----
+cat > /opt/drive-vault/docker-compose.yml <<'COMPOSE'
+services:
+  drive-vault:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+volumes:
+  caddy_data:
+  caddy_config:
+COMPOSE
+
+# ---- convenience script for pulling in future code updates ----------
+cat > /opt/drive-vault/update.sh <<'UPDATE'
+#!/bin/bash
+set -euxo pipefail
+cd /opt/drive-vault
+git fetch --depth 1 origin "$(git rev-parse --abbrev-ref HEAD)"
+git reset --hard FETCH_HEAD
+docker compose up -d --build
+UPDATE
+chmod +x /opt/drive-vault/update.sh
+
+cd /opt/drive-vault
+docker compose up -d --build

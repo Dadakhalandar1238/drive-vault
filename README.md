@@ -34,6 +34,47 @@ The service is free forever on Render's free web tier (it spins down
 after ~15 minutes of no traffic and takes ~30–50s to wake back up on the
 next request; fine for a personal tool).
 
+## Deploy to Oracle Cloud (OCI, free forever, no cold starts) via Terraform
+
+OCI's "Always Free" tier includes an Arm-based Ampere A1 compute instance
+(up to 4 OCPUs / 24 GB RAM) that runs indefinitely — no idle spin-down like
+Render. The one trade-off: unlike Render, **Oracle requires a valid
+credit/debit card at signup** for identity verification, even though
+Always-Free resources are never charged.
+
+The [`terraform/`](terraform/) directory provisions everything —
+networking, the compute instance, and (via cloud-init) Docker, the app
+itself, and [Caddy](https://caddyserver.com/) as a reverse proxy that
+gets you free, automatically-renewing HTTPS. Nothing Google-related is
+configured here either — same as Render, that happens per-user, in the
+app itself.
+
+1. **Create an OCI account** at [cloud.oracle.com](https://cloud.oracle.com) (needs a card for verification, Always-Free usage itself is never charged).
+2. **Set up local API access** — install the [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm), then run:
+   ```bash
+   oci setup config
+   ```
+   This walks you through generating an API signing key and writes
+   `~/.oci/config`, which Terraform reuses automatically.
+3. **Install Terraform** ([terraform.io/downloads](https://www.terraform.io/downloads)) and an SSH key pair if you don't already have one (`ssh-keygen`).
+4. **Configure and deploy:**
+   ```bash
+   cd terraform
+   cp terraform.tfvars.example terraform.tfvars
+   # edit terraform.tfvars: at minimum set region + compartment_ocid
+   # (Console -> Profile -> Tenancy for your tenancy OCID)
+   terraform init
+   terraform apply
+   ```
+5. Wait a few minutes for the instance to boot and the app to build
+   (`docker compose up -d --build` runs automatically via cloud-init),
+   then visit the `app_url` Terraform prints — either your own domain, if
+   you set the `domain` variable and pointed its DNS A record at the
+   printed `public_ip`, or a free `nip.io` hostname derived from that IP
+   automatically otherwise (no DNS setup needed).
+6. To pull in a future code update, SSH in (`terraform output ssh_command`) and run `/opt/drive-vault/update.sh`.
+7. `terraform destroy` tears everything down when you're done.
+
 ## Using it (what each person sees)
 
 1. Visit your deployed URL. If you're new, you'll land on a setup screen

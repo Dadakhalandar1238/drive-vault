@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in. Never commit terraform.tfvars
+# itself (it's already in .gitignore).
+
+region           = "us-ashburn-1"   # your OCI home region
+compartment_ocid = "ocid1.tenancy.oc1..xxxxxxx"  # Console -> Profile -> Tenancy
+
+# Optional overrides:
+# ssh_public_key_path   = "~/.ssh/id_rsa.pub"
+# domain                = "vault.example.com"   # leave unset to use a free nip.io hostname instead
+# google_picker_api_key = ""
+# instance_ocpus        = 4
+# instance_memory_in_gbs = 24
