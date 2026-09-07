@@ -45,7 +45,7 @@
       <div class="tanks-head">
         <p class="section-title">Connected drives ({{ num_drives }}/{{ max_drives }})</p>
         {% if can_add_drive %}
-          <a class="btn secondary" href="/connect-drive">+ Connect another drive</a>
+          <button class="btn secondary" type="button" id="connectDriveBtn">+ Connect another drive</button>
         {% else %}
           <button class="btn secondary" disabled>Drive limit reached</button>
         {% endif %}
@@ -169,6 +169,26 @@
         </tbody>
       </table>
     </section>
+  </div>
+
+  <div class="modal-overlay" id="connectDriveModal" hidden>
+    <div class="card modal-card">
+      <button type="button" class="modal-close" id="connectDriveModalClose" aria-label="Close">&times;</button>
+      <p class="section-title">Before you connect another drive</p>
+      <p class="muted-p">
+        Every drive you connect goes through the same Google Cloud project as your primary sign-in.
+        While that project's OAuth consent screen is still in <strong>Testing</strong> mode, the Google
+        account you're about to add has to be listed there as a <strong>Test user</strong> &mdash;
+        otherwise Google blocks the sign-in with an access-denied error before it ever reaches this app,
+        and there's no way for Drive Vault to add it for you automatically (Google doesn't offer an API
+        for that).
+      </p>
+      <p class="muted-p">Already added it, or connecting a Workspace/internal account? Just continue.</p>
+      <div class="modal-actions">
+        <a class="btn secondary" id="testUsersLink" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Open Test users page &#8599;</a>
+        <a class="btn" href="/connect-drive">Continue to Google sign-in</a>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -603,6 +623,26 @@
 
     const importBtn = document.getElementById('importBtn');
     if (importBtn) importBtn.addEventListener('click', openDrivePicker);
+
+    // ---------------- connect-drive: test-user reminder modal ----------------
+    // Google gives no API to check or add OAuth consent-screen test users --
+    // the only thing we can do is point straight at the right page before
+    // the user hits Google's own dead-end "Error 403: access_denied" screen.
+    // The OAuth Client ID's numeric prefix is the GCP project number, so we
+    // can deep-link directly to that project's Test users tab.
+    const connectDriveBtn = document.getElementById('connectDriveBtn');
+    if (connectDriveBtn) {
+      const connectDriveModal = document.getElementById('connectDriveModal');
+      const testUsersLink = document.getElementById('testUsersLink');
+      const projectNumberMatch = /^(\d+)-/.exec(GOOGLE_CLIENT_ID || '');
+      if (projectNumberMatch) {
+        testUsersLink.href = `https://console.cloud.google.com/auth/audience?project=${projectNumberMatch[1]}`;
+      }
+      connectDriveBtn.addEventListener('click', () => { connectDriveModal.hidden = false; });
+      document.getElementById('connectDriveModalClose').addEventListener('click', () => { connectDriveModal.hidden = true; });
+      connectDriveModal.addEventListener('click', (e) => { if (e.target === connectDriveModal) connectDriveModal.hidden = true; });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') connectDriveModal.hidden = true; });
+    }
   </script>
 </body>
 </html>
