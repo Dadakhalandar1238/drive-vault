@@ -12,7 +12,16 @@
 <body>
   <div class="wrap">
     <div class="topbar">
-      <h1>Drive Vault</h1>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="6" y="4" width="28" height="32" rx="4" stroke="currentColor" stroke-width="2.6"/>
+            <path d="M6 24H16L18 27H22L24 24H34" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>
+            <circle cx="20" cy="14" r="4" stroke="currentColor" stroke-width="2.6"/>
+          </svg>
+        </span>
+        <h1>Drive Vault</h1>
+      </div>
       <div class="session-info">
         <span>{{ email }}</span>
         <a href="/logout">Log out</a>
