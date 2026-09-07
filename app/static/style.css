@@ -60,7 +60,7 @@ h1, .num, .gauge-label, .btn {
   font-family: "Space Grotesk", -apple-system, sans-serif;
 }
 
-.wrap { max-width: 1040px; margin: 0 auto; padding: 36px 24px 80px; position: relative; z-index: 1; }
+.wrap { width: 100%; margin: 0 auto; padding: 36px clamp(20px, 3vw, 64px) 80px; position: relative; z-index: 1; box-sizing: border-box; }
 .center { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 
 /* ---------- entrance animation ---------- */
