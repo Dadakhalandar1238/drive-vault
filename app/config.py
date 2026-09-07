@@ -43,14 +43,16 @@ SCOPES_SECONDARY = [
 GOOGLE_PICKER_API_KEY = os.environ.get("GOOGLE_PICKER_API_KEY", "")
 
 MAX_DRIVES_PER_USER = int(os.environ.get("MAX_DRIVES_PER_USER", 10))
-# Deliberately conservative default: this app targets free-tier hosting
-# (e.g. Render's 512MB RAM limit), and each concurrent upload/download
-# can hold several times its own file size in memory at once (read into
-# memory, sliced for chunking, then buffered again for the HTTP request).
-# 10 concurrent big-file transfers on 512MB is a real way to get
-# OOM-killed. Raise this via env var if you deploy somewhere with more
-# RAM and want faster multi-file uploads.
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 4))
+# Every concurrent upload/download transfer is bounded to roughly
+# drive_client.TRANSFER_CHUNK_SIZE (8 MiB) of memory at a time, regardless
+# of the actual file size -- see drive_client.py's upload_from_fd()/
+# download_to_fd(). So peak memory here is roughly MAX_WORKERS * 8MB, not
+# MAX_WORKERS * file_size like it used to be back when a whole file (or
+# whole chunk) was read into memory before uploading. 10 is comfortable
+# even on a 512MB free-tier host; raise it further if you deploy
+# somewhere with more RAM and want more parallelism on big multi-file
+# batches.
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", 10))
 # Generous timeout since a chunk upload/download can legitimately take a
 # while on a slow connection -- this exists to fail clearly instead of
 # hanging forever if something actually goes wrong on the wire.

@@ -6,6 +6,7 @@ API directly.
 from __future__ import annotations
 
 import io
+import os
 
 import httplib2
 from google.oauth2.credentials import Credentials
@@ -17,6 +18,91 @@ from . import config, token_cache
 
 UNLIMITED_QUOTA_FALLBACK = 10**15  # Workspace accounts often report no "limit"
 VAULT_FILENAME = "vault.enc"
+
+# Peak memory for a single upload/download transfer is bounded by this,
+# regardless of how large the actual file/chunk is -- the whole point of
+# upload_from_fd()/download_to_fd() below. 8 MiB is comfortably small
+# next to even a constrained free-tier host, while still being large
+# enough that the per-request overhead of a resumable upload session
+# doesn't dominate for a merely-large (not huge) file.
+TRANSFER_CHUNK_SIZE = 8 * 1024 * 1024
+
+# Below this size, skip the resumable-upload session entirely and just
+# do one plain read + one HTTP POST -- faster for the common case (small
+# files, or a chunk this small) since there's no session-negotiation
+# round trip to pay for.
+SIMPLE_UPLOAD_THRESHOLD = TRANSFER_CHUNK_SIZE
+
+
+class _FdRangeReader:
+    """A read-only, seekable view over the byte range [offset, offset +
+    length) of an already-open file descriptor -- what MediaIoBaseUpload
+    reads from for a resumable upload. Uses os.pread(), which takes an
+    explicit position instead of relying on (and mutating) the fd's
+    shared seek position, so many of these can safely read the same fd
+    concurrently from different threads -- exactly what happens when one
+    large file is split into chunks uploaded to several drives at once."""
+
+    def __init__(self, fd: int, offset: int, length: int):
+        self._fd = fd
+        self._base_offset = offset
+        self._length = length
+        self._pos = 0
+
+    def read(self, size: int = -1) -> bytes:
+        remaining = self._length - self._pos
+        if remaining <= 0:
+            return b""
+        if size is None or size < 0:
+            size = remaining
+        size = min(size, remaining)
+        data = os.pread(self._fd, size, self._base_offset + self._pos)
+        self._pos += len(data)
+        return data
+
+    def seek(self, pos: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._pos = pos
+        elif whence == 1:
+            self._pos += pos
+        elif whence == 2:
+            self._pos = self._length + pos
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
+
+
+class _FdOffsetWriter:
+    """The write-side counterpart: MediaIoBaseDownload writes each
+    downloaded chunk here via .write(), having first called .seek() to
+    report how far into the download it is. Translates that into an
+    os.pwrite() at (base_offset + reported position) -- so several of
+    these, each with a different base_offset but sharing one destination
+    fd, can reassemble a multi-chunk file's pieces concurrently, each
+    chunk landing directly at its correct final position on disk."""
+
+    def __init__(self, fd: int, base_offset: int):
+        self._fd = fd
+        self._base_offset = base_offset
+        self._pos = 0
+
+    def write(self, data: bytes) -> int:
+        n = os.pwrite(self._fd, data, self._base_offset + self._pos)
+        self._pos += n
+        return n
+
+    def seek(self, pos: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._pos = pos
+        elif whence == 1:
+            self._pos += pos
+        else:
+            raise NotImplementedError
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
 
 
 class DriveClient:
@@ -104,6 +190,37 @@ class DriveClient:
             _, done = downloader.next_chunk()
         self._touch_cache()
         return buf.getvalue()
+
+    # ---- streaming variants, for actual user file uploads/downloads ---
+    # Unlike upload_bytes()/download_bytes() above (fine for the vault,
+    # which is always small JSON), these never hold more than
+    # TRANSFER_CHUNK_SIZE of file content in memory at once, no matter how
+    # large the file or chunk is -- see the module docstring constants.
+    def upload_from_fd(self, name: str, fd: int, offset: int, length: int, mime_type: str = "application/octet-stream") -> str:
+        if length <= SIMPLE_UPLOAD_THRESHOLD:
+            # Small enough that a plain single-shot upload is both simpler
+            # and faster than paying for a resumable session's extra round
+            # trip -- one bounded read, one POST.
+            data = os.pread(fd, length, offset)
+            media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type, resumable=False)
+            file = self._service.files().create(body={"name": name}, media_body=media, fields="id").execute()
+        else:
+            media = MediaIoBaseUpload(_FdRangeReader(fd, offset, length), mimetype=mime_type, resumable=True, chunksize=TRANSFER_CHUNK_SIZE)
+            request = self._service.files().create(body={"name": name}, media_body=media, fields="id")
+            response = None
+            while response is None:
+                _, response = request.next_chunk()
+            file = response
+        self._touch_cache()
+        return file["id"]
+
+    def download_to_fd(self, file_id: str, dest_fd: int, dest_offset: int = 0) -> None:
+        request = self._service.files().get_media(fileId=file_id)
+        downloader = MediaIoBaseDownload(_FdOffsetWriter(dest_fd, dest_offset), request, chunksize=TRANSFER_CHUNK_SIZE)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        self._touch_cache()
 
     def delete_file(self, file_id: str) -> None:
         self._service.files().delete(fileId=file_id).execute()

@@ -7,6 +7,7 @@ means by having FakeDriveClient track whether any two calls ever
 overlapped on the same instance.
 """
 import os
+import tempfile
 import threading
 import time
 
@@ -30,7 +31,7 @@ class FakeDriveClient:
         # mirror that here so upload_many exercises the real code path.
         return FakeDriveClient(self.name, self._shared_state)
 
-    def upload_bytes(self, name, data):
+    def upload_from_fd(self, name, fd, offset, length):
         my_id = id(self)
         state = self._shared_state
         with state["lock"]:
@@ -55,9 +56,17 @@ def test_multiple_files_same_drive_do_not_share_a_connection():
         "drive-b": FakeDriveClient("drive-b", shared_state),
         "drive-c": FakeDriveClient("drive-c", shared_state),
     }
-    payloads = [(f"file{i}.jpg", b"x" * 1000) for i in range(8)]
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp.write(b"x" * 1000)
+    tmp.flush()
+    fd = os.open(tmp.name, os.O_RDONLY)
+    payloads = [(f"file{i}.jpg", fd, 1000) for i in range(8)]
 
-    result = distributor.upload_many(clients, payloads)
+    try:
+        result = distributor.upload_many(clients, payloads)
+    finally:
+        os.close(fd)
+        os.unlink(tmp.name)
 
     assert len(result) == 8
     for filename, chunks in result.items():

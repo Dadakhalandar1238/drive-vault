@@ -33,12 +33,12 @@ class FakeDriveClient:
     def get_free_space(self):
         return 100 * GB
 
-    def upload_bytes(self, name, data):
+    def upload_from_fd(self, name, fd, offset, length):
         self._next_id += 1
         return f"fake-id-{self._next_id}"
 
-    def download_bytes(self, file_id):
-        return b"fake-bytes"
+    def download_to_fd(self, file_id, dest_fd, dest_offset=0):
+        os.pwrite(dest_fd, b"fake-bytes", dest_offset)
 
     def delete_file(self, file_id):
         pass

@@ -68,19 +68,23 @@ with `drive.file` + `drive.appdata` scopes. The codebase went a step further:
    ([`app/session.py`](app/session.py)) holding `sub`, `email`, the
    (encrypted) refresh token, and the (encrypted) Client Secret. Any server
    instance can serve any request from the cookie alone.
-5. **Remembered device (added after initial build):** a second, separate
-   cookie (`dv_remember`, 1-year TTL) carries the same Client ID/Secret as
-   the session cookie but outlives it. It's set/refreshed on every
-   successful `/oauth/callback`. When the session expires or is cleared,
-   `GET /` detects this cookie and shows a one-click "Continue to Google
-   Sign-In" (`GET /continue`) instead of the manual credential form —
-   `_redirect_to_google_login()` in [`app/main.py`](app/main.py) is shared
-   between `/start-setup` and `/continue` so both paths funnel into the
-   same OAuth kickoff. `GET /forget-device` clears both cookies. This
-   exists because Google's refresh-token grant still requires the original
-   client_id/client_secret to redeem — there is no way to recover a lost
-   session's refresh token without them, so remembering the credentials
-   themselves (not the refresh token) is what makes repeat logins painless.
+5. **Remembered device (added after initial build, later upgraded):** a
+   second, separate cookie (`dv_remember`, 1-year TTL) carries the Client
+   ID/Secret *and* the refresh token from the last successful login.
+   `GET /continue` uses that refresh token directly: a cheap
+   `get_storage_info()` call forces a real token refresh, and if it
+   succeeds, a new session is created straight from it — **no redirect
+   to Google at all**, since nothing new is being authorized. Only if
+   that refresh token no longer works (revoked, or expired from months
+   of disuse) does it fall back to `_redirect_to_google_login()` — the
+   same helper `/start-setup` uses — still with the remembered Client
+   ID/Secret, so nothing to retype even on the fallback path.
+   `GET /forget-device` clears both cookies. This exists because the
+   server keeps no state of its own: the refresh token has to live
+   *somewhere* client-side for a lapsed session to resume without
+   re-prompting consent, and the remember cookie is the only place that
+   isn't the vault (which needs a live Drive connection to read in the
+   first place — a chicken-and-egg problem the remember cookie sidesteps).
 5. **CSRF protection on the OAuth `state` param**
    ([`app/oauth_state.py`](app/oauth_state.py)) is done by signing it with
    `SECRET_KEY` rather than comparing against server-side state, since there
@@ -112,15 +116,32 @@ On upload:
 Downloads reverse this: every chunk of a file is fetched concurrently and
 reassembled in offset order. Deletes fan out the same way.
 
+**Everything above is planning only — no file bytes involved.**
+`upload_many()` takes `(filename, fd, size)`, not `(filename, bytes)`:
+`main.py`'s upload route never calls `await file.read()`; it just gets the
+already-parsed `UploadFile`'s own file descriptor (Starlette spools
+anything past a small threshold to a real temp file on disk, so
+`.fileno()` is always available) and its size (via seek/tell). Each
+planned chunk is read from that fd at its own offset, on demand, at
+upload time — see `DriveClient.upload_from_fd()` below. Downloads
+mirror this: every chunk writes directly to its correct offset in one
+shared temp file (`DriveClient.download_to_fd()`), which is then
+streamed back to the browser off disk and deleted. This is what makes a
+20GB upload/download cost the same handful of megabytes of RAM as a
+20KB one — see the README's matching architecture note for the full
+rationale (this replaced an earlier full-buffering implementation that
+risked OOM on exactly this).
+
 ## Concurrency ([`app/workers.py`](app/workers.py))
 
 All Drive REST calls are I/O-bound, so a `ThreadPoolExecutor` gives real
-parallelism despite the GIL. `MAX_WORKERS` (default 4, deliberately
-conservative) caps this — see "Known limitations" below for why.
-Google's client library is **not thread-safe** at the connection level, so
-every concurrent call gets its own independent `DriveClient` via
-`fresh_copy()` rather than sharing one across threads
-([`app/drive_client.py`](app/drive_client.py:58)).
+parallelism despite the GIL. `MAX_WORKERS` (default 10) caps this — safe
+at that default specifically because of the streaming design above: peak
+memory is `MAX_WORKERS × drive_client.TRANSFER_CHUNK_SIZE` (8 MiB), not
+`MAX_WORKERS × file_size` like before. Google's client library is **not
+thread-safe** at the connection level, so every concurrent call gets its
+own independent `DriveClient` via `fresh_copy()` rather than sharing one
+across threads ([`app/drive_client.py`](app/drive_client.py:58)).
 
 ## Scopes
 
@@ -161,27 +182,29 @@ Picker widget instead of a broader read scope.
 
 ## Known limitations (from the README, still current)
 
-- **Upload/download bytes are buffered fully in memory**, not streamed —
-  real risk of OOM on Render's 512MB free tier with large/concurrent
-  transfers (has happened in testing). `MAX_WORKERS` is capped at 4 because
-  of this. A true streaming fix (straight into Drive's resumable-upload API)
-  is scoped but not built.
 - **No file versioning** — re-uploading the same name overwrites the index
   entry; the old Drive object is orphaned rather than reused/deleted.
 - **Session recovery is per-browser-cookie only** — no cross-device account
   system, no email/password recovery, since there's no database by design.
   The remembered-device cookie reduces a lapsed session (on the *same*
-  browser) to a one-click continue, but a genuinely new browser/device
-  still needs the Client ID/Secret typed in once.
+  browser) to a **silent** resume (no Google redirect at all, since it
+  reuses the stored refresh token directly — see `/continue` in
+  `app/main.py`), falling back to a real Google round trip only if that
+  refresh token has actually stopped working. A genuinely new browser/
+  device still needs the Client ID/Secret typed in once.
 
 ## Tests (`tests/`, offline — no network/Google credentials needed)
 
 `test_logic.py`, `test_thread_safety.py`, `test_token_cache.py`,
 `test_folders.py`, `test_folder_and_batch_routes.py`,
 `test_byo_oauth_credentials.py`, `test_onboarding_flow.py`,
-`test_dashboard_render.py`, `test_upload_concurrency_regression.py` — cover
-encryption round-trips, session/cookie handling, chunk-planning math, folder
-path logic, and the bring-your-own-OAuth onboarding flow.
+`test_dashboard_render.py`, `test_upload_concurrency_regression.py`,
+`test_streaming_transfer.py` — cover encryption round-trips,
+session/cookie handling, chunk-planning math, folder path logic, the
+bring-your-own-OAuth onboarding flow, and (that last file) byte-level
+correctness of the fd-based streaming upload/download primitives — real
+temp files and real `os.pread`/`os.pwrite`, not just mocked call
+assertions, since a silent off-by-one there would corrupt files.
 
 Run with:
 ```bash

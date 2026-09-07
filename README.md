@@ -204,6 +204,23 @@ PYTHONPATH=. python -m pytest tests/ -q
   Google's client library is explicitly not thread-safe at the
   connection level, so every concurrent call gets its own independent
   connection (`DriveClient.fresh_copy()`) rather than sharing one.
+- **Streaming uploads/downloads, memory bounded regardless of file
+  size.** Neither direction ever reads a whole file into memory. On
+  upload, `main.py` hands `distributor.upload_many()` the incoming
+  file's descriptor and size, not its bytes — Starlette has already
+  spooled anything past a small threshold to a real temp file on disk,
+  so `os.pread()` reads only the exact byte range each chunk needs,
+  directly from that file, at upload time. A chunk under 8 MiB is read
+  and sent in one plain request; anything larger goes through Drive's
+  resumable-upload API in bounded 8 MiB pieces
+  (`DriveClient.upload_from_fd()`). On download, every chunk is fetched
+  concurrently and written directly to its correct byte offset in one
+  shared temp file via `os.pwrite()` (`DriveClient.download_to_fd()`),
+  then that assembled file is streamed back to the browser off disk
+  (`FileResponse`) and deleted once sent. Peak memory per transfer is
+  therefore roughly `MAX_WORKERS × 8MB`, not `MAX_WORKERS × file size` —
+  a 20GB file costs the same ~8MB of RAM per concurrent chunk as a
+  20KB one.
 - **Access-token caching.** Each connected account's short-lived access
   token is cached in memory (keyed by the account's own Google id) across
   requests, so repeat requests within the token's ~1 hour lifetime skip
@@ -233,16 +250,6 @@ PYTHONPATH=. python -m pytest tests/ -q
 
 ## Known limitations / good next enhancements
 
-- Uploaded file bytes are held in memory during a request rather than
-  streamed. On Render's free tier (512MB RAM), this can OOM-kill the
-  instance with either large files or several files uploading at once
-  — this has actually happened in testing. `MAX_WORKERS` defaults to a
-  conservative `4` specifically because of this (down from `10`); lower
-  it further via env var if you still see out-of-memory restarts in
-  Render's Events tab, or raise it if you deploy somewhere with more RAM.
-  A proper fix (streaming straight from the upload into Drive's
-  resumable-upload API, so peak memory stops scaling with file size at
-  all) is a real, scoped piece of work — say the word and I'll build it.
 - No file versioning yet — re-uploading the same name overwrites the
   index entry (the old Drive object becomes orphaned rather than reused).
 - "Existing user" recognition is per-browser (cookies), not a

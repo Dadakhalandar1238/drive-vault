@@ -3,11 +3,13 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 
 from . import auth, config, distributor, oauth_state, session, vault
 from .drive_client import DriveClient
@@ -401,18 +403,29 @@ async def upload(request: Request, files: list[UploadFile], folder: str = Form("
     clients, v = build_clients_and_vault(sess)
     folder = vault.normalize_path(folder)
 
-    payloads = []
+    payloads = []       # (key, fd, size) for distributor.upload_many
+    keys_and_sizes = []  # (key, size) for recording into the vault after
     for f in files:
         key = f"{folder}/{f.filename}" if folder else f.filename
-        payloads.append((key, await f.read()))
+        # .fileno() forces Starlette's SpooledTemporaryFile to roll over
+        # to a real on-disk file if it hasn't already (small uploads start
+        # in memory) -- from here on we only ever read bounded pieces of
+        # it via os.pread, never the whole thing at once. See
+        # distributor.upload_many / drive_client.upload_from_fd.
+        fd = f.file.fileno()
+        f.file.seek(0, io.SEEK_END)
+        size = f.file.tell()
+        f.file.seek(0)
+        payloads.append((key, fd, size))
+        keys_and_sizes.append((key, size))
 
     try:
         grouped_chunks = distributor.upload_many(clients, payloads)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    for key, data in payloads:
-        vault.record_file(v, key, len(data), grouped_chunks[key])
+    for key, size in keys_and_sizes:
+        vault.record_file(v, key, size, grouped_chunks[key])
 
     primary_client = clients[sess["sub"]]
     vault.save_vault(primary_client, v)
@@ -429,14 +442,16 @@ def download(request: Request, filename: str):
         raise HTTPException(404, "File not found")
 
     display_name = filename.split("/")[-1]
-    data = distributor.download_with_chunks(clients, info["chunks"])
-    return StreamingResponse(
-        io.BytesIO(data),
+    # Every chunk is fetched concurrently straight to its correct offset
+    # in this temp file (see distributor.download_with_chunks) -- never
+    # assembled in memory. FileResponse then streams it off disk in
+    # bounded pieces; the background task cleans it up once that's done.
+    tmp_path = distributor.download_with_chunks(clients, info["chunks"])
+    return FileResponse(
+        tmp_path,
         media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": f'attachment; filename="{display_name}"',
-            "Content-Length": str(len(data)),
-        },
+        filename=display_name,
+        background=BackgroundTask(os.remove, tmp_path),
     )
 
 
