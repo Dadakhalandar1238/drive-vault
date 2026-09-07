@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -10,6 +11,8 @@ from fastapi.templating import Jinja2Templates
 
 from . import auth, config, distributor, oauth_state, session, vault
 from .drive_client import DriveClient
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Drive Vault")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -261,6 +264,7 @@ def oauth_callback(request: Request, code: str, state: str):
     try:
         identity = auth.exchange_code_for_identity(flow, code, pending["client_id"])
     except Exception:
+        logger.warning("OAuth token exchange failed for client_id=%s, redirect_uri=%s", pending["client_id"], redirect_uri, exc_info=True)
         return RedirectResponse("/?error=auth_failed", status_code=303)
 
     # Bootstrap the vault immediately so the encrypted backup of this
@@ -328,6 +332,7 @@ def oauth_callback_secondary(request: Request, code: str, state: str):
     try:
         identity = auth.exchange_code_for_identity(flow, code, sess["client_id"])
     except Exception:
+        logger.warning("OAuth token exchange failed (secondary drive) for client_id=%s, redirect_uri=%s", sess["client_id"], redirect_uri, exc_info=True)
         raise HTTPException(400, "Couldn't complete sign-in for that account -- please try again.")
 
     if identity["sub"] == sess["sub"]:
