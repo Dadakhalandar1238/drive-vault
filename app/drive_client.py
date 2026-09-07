@@ -136,6 +136,15 @@ class DriveClient:
         # and fresh_copy() below lets concurrent callers get their own
         # instance instead of sharing this one across threads.
         http = httplib2.Http(timeout=config.DRIVE_REQUEST_TIMEOUT)
+        # httplib2 treats HTTP 308 as an auto-followed redirect by default,
+        # but Google's resumable-upload protocol repurposes 308 to mean
+        # "this chunk was received, send the next one" -- a real 308 has no
+        # Location header, so httplib2's own redirect-following crashes
+        # with RedirectMissingLocation the moment a multi-chunk upload (any
+        # file over TRANSFER_CHUNK_SIZE) gets past its first chunk. Telling
+        # it to leave 308 alone lets googleapiclient's own resumable-upload
+        # logic interpret it correctly instead.
+        http.redirect_codes = http.redirect_codes - {308}
         authorized_http = AuthorizedHttp(creds, http=http)
         # cache_discovery=False avoids writing to disk, keeping the
         # container filesystem untouched (important for stateless hosts)

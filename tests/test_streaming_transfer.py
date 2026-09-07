@@ -132,6 +132,57 @@ def _client_with_mocked_service():
     return client
 
 
+# ---------------------------------------------------------------------
+# Real production bug (2.5GB upload): httplib2 auto-follows HTTP 308 as
+# a redirect by default, but Google's resumable-upload protocol reuses
+# 308 to mean "chunk received, send the next one" -- with no Location
+# header, since it isn't really a redirect. httplib2 crashed with
+# RedirectMissingLocation the moment a multi-chunk upload got past its
+# first chunk. Only surfaces for files over TRANSFER_CHUNK_SIZE, which
+# is exactly why nothing caught it earlier.
+# ---------------------------------------------------------------------
+def test_drive_client_excludes_308_from_httplib2_auto_redirects():
+    client = DriveClient("fake-refresh-token", ["https://www.googleapis.com/auth/drive.file"], "cid", "csecret")
+    underlying_http = client._service._http.http
+    assert 308 not in underlying_http.redirect_codes
+
+
+def test_httplib2_would_crash_on_a_real_resumable_upload_continue_response_without_the_fix():
+    """Reproduces the exact crash directly against httplib2's own
+    redirect-following logic, independent of any Google/DriveClient
+    mocking -- a real local server returning what Google's resumable
+    upload API actually sends for "keep going" (308, no Location)."""
+    import http.server
+    import threading
+
+    import httplib2
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_PUT(self):
+            self.send_response(308, "Resume Incomplete")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        broken = httplib2.Http()
+        with pytest.raises(httplib2.error.RedirectMissingLocation):
+            broken.request(f"http://127.0.0.1:{port}/", method="PUT", body=b"x")
+
+        fixed = httplib2.Http()
+        fixed.redirect_codes = fixed.redirect_codes - {308}
+        resp, _ = fixed.request(f"http://127.0.0.1:{port}/", method="PUT", body=b"x")
+        assert resp.status == 308
+    finally:
+        server.shutdown()
+
+
 def test_upload_from_fd_small_chunk_uses_simple_non_resumable_upload(tmp_content, monkeypatch):
     fd, content, _ = tmp_content
     client = _client_with_mocked_service()
