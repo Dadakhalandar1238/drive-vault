@@ -230,12 +230,46 @@ def start_setup(request: Request, email: str = Form(""), client_id: str = Form(.
 
 @app.get("/continue")
 def continue_with_remembered(request: Request):
-    """One-click re-login for a returning user whose session has expired or
-    been cleared, using the Client ID/Secret saved in the remember cookie
-    instead of asking them to retype it."""
+    """Re-login for a returning user whose session has expired or been
+    cleared. If the remembered refresh token still works, this resumes
+    the existing Google grant silently -- no redirect to Google, no
+    consent screen, since nothing new is being authorized. Only falls
+    back to a full Google round trip (still using the same remembered
+    Client ID/Secret, so no retyping) if that token no longer works."""
     remembered = session.read_remember_cookie(request.cookies.get(config.REMEMBER_COOKIE_NAME))
     if remembered is None:
         return RedirectResponse("/")
+
+    if remembered["refresh_token"] and remembered["sub"]:
+        try:
+            primary_client = DriveClient(
+                remembered["refresh_token"], config.SCOPES_PRIMARY,
+                remembered["client_id"], remembered["client_secret"], account_key=remembered["sub"],
+            )
+            primary_client.get_storage_info()  # cheap call; forces a real token refresh, proving it's still valid
+        except Exception:
+            logger.info("Remembered refresh token no longer valid for client_id=%s -- falling back to full Google sign-in.", remembered["client_id"])
+        else:
+            cookie_value = session.create_session_cookie(
+                remembered["sub"], remembered["email"], remembered["refresh_token"],
+                remembered["client_id"], remembered["client_secret"],
+            )
+            resp = RedirectResponse("/dashboard", status_code=303)
+            resp.set_cookie(
+                config.SESSION_COOKIE_NAME, cookie_value,
+                max_age=config.SESSION_MAX_AGE, httponly=True, samesite="lax", secure=True,
+            )
+            # Slides the remember cookie's own 1-year expiry forward too,
+            # so an actively-used "remembered" browser never quietly ages out.
+            remember_cookie_value = session.create_remember_cookie(
+                remembered["sub"], remembered["email"], remembered["client_id"], remembered["client_secret"], remembered["refresh_token"],
+            )
+            resp.set_cookie(
+                config.REMEMBER_COOKIE_NAME, remember_cookie_value,
+                max_age=config.REMEMBER_MAX_AGE, httponly=True, samesite="lax", secure=True,
+            )
+            return resp
+
     return _redirect_to_google_login(request, remembered["email"], remembered["client_id"], remembered["client_secret"])
 
 
@@ -289,9 +323,11 @@ def oauth_callback(request: Request, code: str, state: str):
     )
     # Refreshed on every successful login (sliding 1-year expiry) so a
     # returning user keeps getting the one-click /continue path instead of
-    # the credential form, for as long as they keep coming back.
+    # the credential form, for as long as they keep coming back. Carries
+    # the refresh token too, so /continue can resume silently -- see
+    # session.py's create_remember_cookie docstring.
     remember_cookie_value = session.create_remember_cookie(
-        identity["email"], pending["client_id"], pending["client_secret"],
+        identity["sub"], identity["email"], pending["client_id"], pending["client_secret"], identity["refresh_token"],
     )
     resp.set_cookie(
         config.REMEMBER_COOKIE_NAME, remember_cookie_value,

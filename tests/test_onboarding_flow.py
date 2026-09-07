@@ -198,10 +198,12 @@ def test_oauth_callback_success_also_sets_a_long_lived_remember_cookie(client, m
     assert remembered["email"] == "me@example.com"
     assert remembered["client_id"] == "user-client-id"
     assert remembered["client_secret"] == "user-client-secret"
+    assert remembered["sub"] == "google-sub-123"
+    assert remembered["refresh_token"] == "user-refresh-token"
 
 
 def test_welcome_page_offers_one_click_continue_when_device_is_remembered(client):
-    remember_cookie = session.create_remember_cookie("me@example.com", "remembered-client-id", "remembered-secret")
+    remember_cookie = session.create_remember_cookie("sub-1", "me@example.com", "remembered-client-id", "remembered-secret", "remembered-refresh-token")
     client.cookies.set(config.REMEMBER_COOKIE_NAME, remember_cookie)
 
     resp = client.get("/")
@@ -216,8 +218,47 @@ def test_welcome_page_has_no_continue_prompt_without_a_remember_cookie(client):
     assert 'href="/continue"' not in resp.text
 
 
-def test_continue_redirects_to_google_using_remembered_credentials(client):
-    remember_cookie = session.create_remember_cookie("me@example.com", "remembered-client-id", "remembered-secret")
+def test_continue_resumes_silently_when_remembered_refresh_token_is_still_valid(client, monkeypatch):
+    """The whole point of remembering the refresh token: a returning user
+    lands straight on the dashboard, with no redirect to Google at all --
+    not even the one-click consent screen, since nothing new is being
+    authorized."""
+    class FakeDriveClient:
+        def __init__(self, refresh_token, scopes, client_id, client_secret, account_key=None):
+            pass
+
+        def get_storage_info(self):
+            return {"limit": 1000, "usage": 0, "free": 1000}
+
+    monkeypatch.setattr(main, "DriveClient", FakeDriveClient)
+
+    remember_cookie = session.create_remember_cookie("sub-1", "me@example.com", "remembered-client-id", "remembered-secret", "still-good-refresh-token")
+    client.cookies.set(config.REMEMBER_COOKIE_NAME, remember_cookie)
+
+    resp = client.get("/continue", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/dashboard"
+    # No pending-setup cookie -- confirms no Google round trip was started
+    assert not any(c.name == config.PENDING_SETUP_COOKIE_NAME for c in client.cookies.jar)
+
+    sess_cookie = next(c.value for c in client.cookies.jar if c.name == config.SESSION_COOKIE_NAME)
+    sess = session.read_session_cookie(sess_cookie)
+    assert sess["sub"] == "sub-1"
+    assert sess["email"] == "me@example.com"
+    assert sess["refresh_token"] == "still-good-refresh-token"
+
+
+def test_continue_falls_back_to_google_when_remembered_refresh_token_is_invalid(client, monkeypatch):
+    class FakeDriveClient:
+        def __init__(self, refresh_token, scopes, client_id, client_secret, account_key=None):
+            pass
+
+        def get_storage_info(self):
+            raise RuntimeError("invalid_grant: token revoked")
+
+    monkeypatch.setattr(main, "DriveClient", FakeDriveClient)
+
+    remember_cookie = session.create_remember_cookie("sub-1", "me@example.com", "remembered-client-id", "remembered-secret", "revoked-refresh-token")
     client.cookies.set(config.REMEMBER_COOKIE_NAME, remember_cookie)
 
     resp = client.get("/continue", follow_redirects=False)
@@ -228,6 +269,23 @@ def test_continue_redirects_to_google_using_remembered_credentials(client):
     assert any(c.name == config.PENDING_SETUP_COOKIE_NAME for c in client.cookies.jar)
 
 
+def test_continue_falls_back_to_google_when_remember_cookie_predates_refresh_token_storage(client):
+    """An older remember cookie (from before this feature existed) has no
+    refresh token to try at all -- must not crash, just fall back to the
+    normal Google round trip using the credentials it does have."""
+    from itsdangerous import URLSafeTimedSerializer
+    old_serializer = URLSafeTimedSerializer(config.SECRET_KEY, salt="dv-remember")
+    from app.crypto import encrypt
+    old_cookie = old_serializer.dumps({
+        "email": "me@example.com", "client_id": "old-style-client-id", "cs": encrypt("old-style-secret"),
+    })
+    client.cookies.set(config.REMEMBER_COOKIE_NAME, old_cookie)
+
+    resp = client.get("/continue", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("https://accounts.google.com/o/oauth2/auth")
+
+
 def test_continue_without_remember_cookie_falls_back_to_home(client):
     resp = client.get("/continue", follow_redirects=False)
     assert resp.status_code in (302, 307)
@@ -235,7 +293,7 @@ def test_continue_without_remember_cookie_falls_back_to_home(client):
 
 
 def test_forget_device_clears_remember_and_session_cookies(client):
-    client.cookies.set(config.REMEMBER_COOKIE_NAME, session.create_remember_cookie("me@example.com", "cid", "csecret"))
+    client.cookies.set(config.REMEMBER_COOKIE_NAME, session.create_remember_cookie("sub-1", "me@example.com", "cid", "csecret", "rt"))
     client.cookies.set(config.SESSION_COOKIE_NAME, session.create_session_cookie("sub-1", "me@example.com", "rt", "cid", "csecret"))
 
     resp = client.get("/forget-device", follow_redirects=False)

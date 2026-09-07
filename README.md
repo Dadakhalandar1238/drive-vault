@@ -87,11 +87,16 @@ app itself.
 3. From then on, that's your identity. Anyone who already has a signed-in
    session in their browser skips straight to the dashboard. Once your
    session eventually expires (or you clear cookies), you won't be asked
-   to retype your Client ID/Secret either — the same browser shows a
-   one-click **Continue to Google Sign-In** button instead, using a
-   separate, longer-lived (1 year) remembered-device cookie. "Not you? Use
-   a different Google account" on that screen clears it if you ever need
-   the manual form again (shared computer, switching projects, etc.).
+   to retype your Client ID/Secret either, and you won't be shown Google's
+   consent screen again either — the same browser resumes straight to the
+   dashboard, silently, using a separate, longer-lived (1 year)
+   remembered-device cookie that holds your last refresh token alongside
+   your credentials. "Not you? Use a different Google account" clears it
+   if you ever need the manual form again (shared computer, switching
+   projects, etc.), and if that stored refresh token ever stops working
+   (you revoked access, or it expired from months of disuse), it falls
+   back automatically to a real Google sign-in — still using the same
+   remembered Client ID/Secret, so nothing to retype even then.
 4. On the dashboard, **Connect another drive** adds up to 9 more Google
    accounts — using the *same* Client ID/Secret you already entered, since
    one small Google Cloud project can authorize as many of your own
@@ -176,14 +181,18 @@ PYTHONPATH=. python -m pytest tests/ -q
   not a server-side session. Any instance can serve any request, which is
   exactly what a free tier that spins containers up/down wants.
 - **Remembered-device cookie.** A second, separate encrypted cookie
-  (`dv_remember`, 1-year TTL) carries the same Client ID/Secret as the
-  session cookie but outlives it, since Google's refresh-token grant still
-  requires the original client_id/client_secret to redeem — there's no way
-  to recover a lost session's refresh token without them. It's set (and
-  refreshed) on every successful `/oauth/callback`, and checked by `/` to
-  decide whether to show the manual credential form or a one-click
-  "Continue to Google Sign-In" (`/continue`) that skips straight to
-  Google's consent screen. `/forget-device` clears both cookies.
+  (`dv_remember`, 1-year TTL) carries the Client ID/Secret *and* the
+  refresh token from the last successful login. `/continue` uses that
+  refresh token directly to resume the existing Google grant — a cheap
+  Drive API call forces a real token refresh, proving it still works —
+  and lands straight on the dashboard with **no redirect to Google at
+  all**. Refresh tokens don't rotate or expire on use, so the same one
+  keeps working indefinitely; `/continue` only falls back to a real
+  Google round trip (still with the remembered Client ID/Secret, so
+  nothing to retype) if that refresh token has actually stopped working
+  (revoked, or expired from months of disuse). Set/refreshed on every
+  successful `/oauth/callback` and on every successful silent `/continue`.
+  `/forget-device` clears both cookies.
 - **Scoped access only.** The app requests `drive.file` (only files it
   creates) and `drive.appdata` (its own hidden config), not full Drive
   access — this avoids Google's costly "restricted scope" security

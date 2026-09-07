@@ -13,11 +13,16 @@ Three cookies exist:
     Client ID/Secret only long enough to survive the redirect out to
     Google and back during first-time setup. Discarded immediately after.
   - the REMEMBER cookie: separate from the session, much longer-lived
-    (config.REMEMBER_MAX_AGE), holds the same Client ID/Secret. Its whole
-    purpose is to survive the session cookie expiring or being cleared, so
-    a returning user gets a one-click "Continue with Google" instead of
-    the full credential-entry form again. Set (and refreshed) every time
-    a login actually succeeds in /oauth/callback.
+    (config.REMEMBER_MAX_AGE), holds the same Client ID/Secret *and* the
+    refresh token from the last successful login. Its purpose is to
+    survive the session cookie expiring or being cleared -- but unlike a
+    plain "skip the form" shortcut, /continue uses the stored refresh
+    token to resume the existing Google grant directly, with no redirect
+    to Google at all, so a returning user isn't shown the consent screen
+    again for something they already approved. Falls back to a real
+    Google round trip only if that stored refresh token turns out to no
+    longer be valid (revoked, or unused long enough to expire). Set (and
+    refreshed) every time a login actually succeeds in /oauth/callback.
 
 Client Secret (and refresh tokens) are individually encrypted within the
 cookie payload, not just signed -- signing alone stops tampering but
@@ -82,8 +87,16 @@ def read_pending_setup_cookie(cookie_value: str | None) -> dict | None:
     return payload
 
 
-def create_remember_cookie(email: str, client_id: str, client_secret: str) -> str:
-    payload = {"email": email, "client_id": client_id, "cs": encrypt(client_secret)}
+def create_remember_cookie(sub: str, email: str, client_id: str, client_secret: str, refresh_token: str) -> str:
+    """The refresh token is what makes /continue a genuinely silent
+    resume instead of just a shortcut past the credential form -- Google
+    refresh tokens don't expire or rotate on use, so the SAME one from
+    the last real login can be reused indefinitely, with no redirect to
+    Google's consent screen at all, as long as it's still valid."""
+    payload = {
+        "sub": sub, "email": email, "client_id": client_id,
+        "cs": encrypt(client_secret), "rt": encrypt(refresh_token),
+    }
     return _remember_serializer.dumps(payload)
 
 
@@ -95,4 +108,9 @@ def read_remember_cookie(cookie_value: str | None) -> dict | None:
     except (BadSignature, SignatureExpired):
         return None
     payload["client_secret"] = decrypt(payload["cs"])
+    # "rt"/"sub" are absent in a cookie saved before refresh tokens were
+    # remembered here -- treat as present-but-unusable rather than crash;
+    # /continue falls back to a full Google round trip in that case.
+    payload["refresh_token"] = decrypt(payload["rt"]) if "rt" in payload else None
+    payload.setdefault("sub", None)
     return payload

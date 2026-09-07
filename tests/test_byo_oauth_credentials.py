@@ -133,16 +133,19 @@ def test_load_vault_self_heals_on_corrupted_garbage_content():
 
 
 def test_remember_cookie_roundtrip():
-    cookie = session.create_remember_cookie("me@example.com", "my-client-id", "my-client-secret")
+    cookie = session.create_remember_cookie("sub-123", "me@example.com", "my-client-id", "my-client-secret", "my-refresh-token")
     data = session.read_remember_cookie(cookie)
+    assert data["sub"] == "sub-123"
     assert data["email"] == "me@example.com"
     assert data["client_id"] == "my-client-id"
     assert data["client_secret"] == "my-client-secret"
+    assert data["refresh_token"] == "my-refresh-token"
 
 
-def test_remember_cookie_does_not_store_secret_in_plaintext():
-    cookie = session.create_remember_cookie("me@example.com", "my-client-id", "super-secret-value")
+def test_remember_cookie_does_not_store_secret_or_refresh_token_in_plaintext():
+    cookie = session.create_remember_cookie("sub-123", "me@example.com", "my-client-id", "super-secret-value", "super-secret-refresh-token")
     assert "super-secret-value" not in cookie
+    assert "super-secret-refresh-token" not in cookie
 
 
 def test_remember_cookie_rejects_garbage():
