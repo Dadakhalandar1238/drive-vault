@@ -164,7 +164,10 @@ section { margin-bottom: 36px; }
 .progress-wrap { margin-top: 14px; }
 .progress-track { height: 10px; border-radius: 999px; background: var(--panel-alt); border: 1px solid var(--border); overflow: hidden; }
 .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--teal), #23a99c); border-radius: 999px; transition: width 120ms linear; }
-.progress-label { font-size: 0.8rem; color: var(--text-dim); margin-top: 6px; display: block; }
+.progress-wrap { display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; }
+.progress-wrap .progress-track { flex: 1 1 100%; }
+.progress-label { font-size: 0.8rem; color: var(--text-dim); margin-top: 6px; }
+#resumeUploadBtn { margin-top: 6px; }
 
 /* ---------- file manifest table ---------- */
 table { width: 100%; border-collapse: collapse; }

@@ -98,11 +98,15 @@ def test_dashboard_renders_instantly_without_waiting_on_quota_checks(client):
     assert "newFolderForm.addEventListener('submit'" in html
     assert '<a class="btn secondary" href="/download/' not in html  # old plain-link download is gone
 
-    # File manifest and upload/progress markup still present
+    # File manifest and upload/progress markup still present -- upload
+    # goes through the resumable chunked-session flow, not a single request
     assert "husky2.jpg" in html
     assert 'id="dropzone"' in html
     assert 'id="progressFill"' in html
-    assert "xhr.upload.onprogress" in html
+    assert 'id="resumeUploadBtn"' in html
+    assert "/upload/init" in html
+    assert "/upload/chunk" in html
+    assert "/upload/complete" in html
     assert '/static/style.css' in html
 
 

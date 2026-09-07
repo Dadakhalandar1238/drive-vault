@@ -85,6 +85,7 @@
       <div class="progress-wrap" id="progressWrap" hidden>
         <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
         <span class="progress-label" id="progressLabel">Uploading&hellip; 0%</span>
+        <button class="btn secondary" type="button" id="resumeUploadBtn" hidden>Resume</button>
       </div>
     </section>
 
@@ -231,12 +232,20 @@
     }
 
     // ---------------- upload (drag/drop + browse + Picker share this) ----------------
+    // Resumable: each file is split into fixed-size chunks and sent one
+    // at a time to a session the server tracks on disk. A dropped
+    // connection (or even closing the tab) just means picking up from
+    // the last unacknowledged chunk -- not restarting the whole file --
+    // since the session id is computed deterministically from the
+    // file's own name/size/lastModified rather than anything we'd have
+    // to remember client-side.
     const dropzone = document.getElementById('dropzone');
     const fileInput = document.getElementById('fileInput');
     const browseBtn = document.getElementById('browseBtn');
     const progressWrap = document.getElementById('progressWrap');
     const progressFill = document.getElementById('progressFill');
     const progressLabel = document.getElementById('progressLabel');
+    const resumeUploadBtn = document.getElementById('resumeUploadBtn');
 
     browseBtn.addEventListener('click', () => fileInput.click());
     dropzone.addEventListener('click', (e) => { if (e.target === dropzone) fileInput.click(); });
@@ -252,36 +261,95 @@
       if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
     });
 
-    function uploadFiles(fileList) {
-      const formData = new FormData();
-      for (const f of fileList) formData.append('files', f);
-      formData.append('folder', CURRENT_FOLDER);
+    let uploadChunkSize = 8 * 1024 * 1024; // refreshed from the server below; this is just a fallback
+    fetch('/upload/config').then(r => r.json()).then(d => { uploadChunkSize = d.chunk_size; }).catch(() => {});
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/upload');
-      progressWrap.hidden = false;
-      progressFill.style.width = '0%';
-      progressLabel.textContent = `Uploading ${fileList.length} file${fileList.length > 1 ? 's' : ''}\u2026 0%`;
-
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
-          progressFill.style.width = pct + '%';
-          progressLabel.textContent = `Uploading\u2026 ${pct}%`;
-        }
-      };
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 400) {
-          progressFill.style.width = '100%';
-          progressLabel.textContent = 'Done \u2014 refreshing\u2026';
-          setTimeout(() => location.href = `/dashboard?folder=${encodeURIComponent(CURRENT_FOLDER)}`, 400);
-        } else {
-          progressLabel.textContent = 'Upload failed: ' + xhr.responseText;
-        }
-      };
-      xhr.onerror = () => { progressLabel.textContent = 'Upload failed \u2014 network error.'; };
-      xhr.send(formData);
+    async function sessionIdFor(file) {
+      const raw = `${file.name}|${file.size}|${file.lastModified}`;
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
+
+    async function uploadOneFile(file, folder, onProgress) {
+      const sessionId = await sessionIdFor(file);
+      const initResp = await fetch('/upload/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, filename: file.name, folder, total_size: file.size, chunk_size: uploadChunkSize }),
+      });
+      if (!initResp.ok) throw new Error(await initResp.text());
+      let { received_chunks, total_chunks } = await initResp.json();
+      onProgress(received_chunks, total_chunks);
+
+      const MAX_RETRIES_PER_CHUNK = 5;
+      while (received_chunks < total_chunks) {
+        const start = received_chunks * uploadChunkSize;
+        const blob = file.slice(start, start + uploadChunkSize);
+
+        let attempt = 0;
+        for (;;) {
+          try {
+            const form = new FormData();
+            form.append('session_id', sessionId);
+            form.append('chunk_index', String(received_chunks));
+            form.append('chunk', blob, 'chunk');
+            const resp = await fetch('/upload/chunk', { method: 'POST', body: form });
+            if (!resp.ok) throw new Error(await resp.text());
+            ({ received_chunks } = await resp.json());
+            onProgress(received_chunks, total_chunks);
+            break;
+          } catch (err) {
+            attempt++;
+            if (attempt > MAX_RETRIES_PER_CHUNK) throw err;
+            await new Promise(r => setTimeout(r, Math.min(1000 * attempt, 5000)));
+          }
+        }
+      }
+
+      const completeResp = await fetch('/upload/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (!completeResp.ok) throw new Error(await completeResp.text());
+      return completeResp.json();
+    }
+
+    let pendingUpload = null; // {fileList, folder, startIndex} -- set on failure so Resume can pick up where it left off
+
+    async function uploadFiles(fileList, startIndex = 0) {
+      const folder = CURRENT_FOLDER;
+      const files = Array.from(fileList);
+      pendingUpload = { fileList, folder, startIndex };
+      progressWrap.hidden = false;
+      resumeUploadBtn.hidden = true;
+
+      try {
+        for (let i = startIndex; i < files.length; i++) {
+          const file = files[i];
+          const filePrefix = files.length > 1 ? `File ${i + 1}/${files.length}: ` : '';
+          await uploadOneFile(file, folder, (done, total) => {
+            const pct = Math.round((done / total) * 100);
+            progressFill.style.width = pct + '%';
+            progressLabel.textContent = `${filePrefix}Uploading\u2026 ${pct}%`;
+          });
+          // This file is fully done -- if a LATER file in the same batch
+          // fails, Resume must not redo this one.
+          pendingUpload.startIndex = i + 1;
+        }
+        progressFill.style.width = '100%';
+        progressLabel.textContent = 'Done \u2014 refreshing\u2026';
+        pendingUpload = null;
+        setTimeout(() => location.href = `/dashboard?folder=${encodeURIComponent(CURRENT_FOLDER)}`, 400);
+      } catch (err) {
+        progressLabel.textContent = 'Upload paused \u2014 ' + (err.message || 'network error') + '. Nothing lost so far; click Resume to continue.';
+        resumeUploadBtn.hidden = false;
+      }
+    }
+
+    resumeUploadBtn.addEventListener('click', () => {
+      if (pendingUpload) uploadFiles(pendingUpload.fileList, pendingUpload.startIndex);
+    });
 
     // ---------------- inline button loading state ----------------
     function setButtonLoading(btn, label = '') {

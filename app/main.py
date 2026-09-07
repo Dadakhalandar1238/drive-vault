@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
 
-from fastapi import Body, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
-from . import auth, config, distributor, oauth_state, session, vault
-from .drive_client import DriveClient
+from . import auth, config, distributor, oauth_state, session, upload_sessions, vault
+from .drive_client import DriveClient, TRANSFER_CHUNK_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -397,39 +396,84 @@ def oauth_callback_secondary(request: Request, code: str, state: str):
 # ---------------------------------------------------------------------
 # file operations
 # ---------------------------------------------------------------------
-@app.post("/upload")
-async def upload(request: Request, files: list[UploadFile], folder: str = Form("")):
+@app.get("/upload/config")
+def upload_config():
+    """The one source of truth for chunk size lives server-side
+    (drive_client.TRANSFER_CHUNK_SIZE) -- the dashboard's JS fetches it
+    rather than hardcoding a second copy that could drift out of sync."""
+    return {"chunk_size": TRANSFER_CHUNK_SIZE}
+
+
+@app.post("/upload/init")
+def upload_init(request: Request, payload: dict = Body(...)):
+    """Starts a new resumable-upload session, or -- if one already
+    exists for this exact (session_id, filename, size) -- reports how
+    far it already got, so the browser knows whether to resume mid-file
+    instead of restarting. session_id is computed client-side from the
+    file's own name/size/lastModified, so re-selecting the same file
+    later (even after closing the tab) reaches the same session."""
+    sess = require_session(request)
+    folder = vault.normalize_path(payload.get("folder", ""))
+    try:
+        status = upload_sessions.init_session(
+            sess["sub"], payload["session_id"], payload["filename"], folder,
+            total_size=int(payload["total_size"]), chunk_size=int(payload["chunk_size"]),
+        )
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return status
+
+
+@app.post("/upload/chunk")
+async def upload_chunk(request: Request, session_id: str = Form(...), chunk_index: int = Form(...), chunk: UploadFile = File(...)):
+    sess = require_session(request)
+    data = await chunk.read()  # bounded by the client's own chunk size (matches TRANSFER_CHUNK_SIZE) -- fine to hold briefly
+    try:
+        received_chunks = upload_sessions.write_chunk(sess["sub"], session_id, chunk_index, data)
+    except upload_sessions.SessionError as e:
+        # 409: the client's view of this session has drifted (e.g. two
+        # tabs uploading the same file at once) -- it should re-sync via
+        # /upload/init rather than treat this as a fatal failure.
+        raise HTTPException(409, str(e))
+    return {"received_chunks": received_chunks}
+
+
+@app.post("/upload/complete")
+def upload_complete(request: Request, payload: dict = Body(...)):
+    """Called once the browser has sent every chunk. Hands the now
+    fully-assembled file off to the exact same distributor pipeline a
+    direct upload always used -- chunked-to-the-server and
+    chunked-across-drives are two independent, unrelated splits."""
     sess = require_session(request)
     clients, v = build_clients_and_vault(sess)
-    folder = vault.normalize_path(folder)
-
-    payloads = []       # (key, fd, size) for distributor.upload_many
-    keys_and_sizes = []  # (key, size) for recording into the vault after
-    for f in files:
-        key = f"{folder}/{f.filename}" if folder else f.filename
-        # .fileno() forces Starlette's SpooledTemporaryFile to roll over
-        # to a real on-disk file if it hasn't already (small uploads start
-        # in memory) -- from here on we only ever read bounded pieces of
-        # it via os.pread, never the whole thing at once. See
-        # distributor.upload_many / drive_client.upload_from_fd.
-        fd = f.file.fileno()
-        f.file.seek(0, io.SEEK_END)
-        size = f.file.tell()
-        f.file.seek(0)
-        payloads.append((key, fd, size))
-        keys_and_sizes.append((key, size))
+    session_id = payload["session_id"]
 
     try:
-        grouped_chunks = distributor.upload_many(clients, payloads)
+        fd, size, filename, folder = upload_sessions.finalize_session(sess["sub"], session_id)
+    except upload_sessions.SessionError as e:
+        raise HTTPException(409, str(e))
+
+    key = f"{folder}/{filename}" if folder else filename
+    try:
+        grouped_chunks = distributor.upload_many(clients, [(key, fd, size)])
     except ValueError as e:
+        # Not enough space across connected drives right now -- the
+        # assembled upload is left in place so retrying just this step
+        # (after freeing space, or connecting another drive) doesn't
+        # require resending the file's bytes.
+        os.close(fd)
         raise HTTPException(400, str(e))
 
-    for key, size in keys_and_sizes:
-        vault.record_file(v, key, size, grouped_chunks[key])
+    os.close(fd)
+    # Distribution to Drive succeeded -- clean up now rather than after
+    # the vault save below, so a later retry (if that save somehow
+    # fails) can't re-upload the same file's bytes a second time.
+    upload_sessions.cleanup_session(sess["sub"], session_id)
 
+    vault.record_file(v, key, size, grouped_chunks[key])
     primary_client = clients[sess["sub"]]
     vault.save_vault(primary_client, v)
-    return RedirectResponse(f"/dashboard?folder={folder}", status_code=303)
+    return {"status": "ok", "key": key, "folder": folder}
 
 
 @app.get("/download/{filename:path}")
