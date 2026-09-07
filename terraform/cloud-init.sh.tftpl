@@ -87,6 +87,9 @@ COMPOSE
 cat > /opt/drive-vault/update.sh <<'UPDATE'
 #!/bin/bash
 set -euxo pipefail
+# Repo is owned by root (cloned during cloud-init), so git refuses to
+# touch it as a different user without this -- harmless if run via sudo.
+git config --global --add safe.directory /opt/drive-vault
 cd /opt/drive-vault
 git fetch --depth 1 origin "$(git rev-parse --abbrev-ref HEAD)"
 git reset --hard FETCH_HEAD
