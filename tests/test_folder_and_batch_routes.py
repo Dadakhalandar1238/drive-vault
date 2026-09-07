@@ -41,8 +41,10 @@ class FakeDriveClient:
     def get_free_space(self):
         return 100 * GB
 
-    def upload_from_fd(self, name, fd, offset, length):
+    def upload_from_fd(self, name, fd, offset, length, progress_cb=None):
         self._next_id += 1
+        if progress_cb:
+            progress_cb(length)
         return f"fake-id-{self._next_id}"
 
     def download_to_fd(self, file_id, dest_fd, dest_offset=0):

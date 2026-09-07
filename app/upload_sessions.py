@@ -63,6 +63,10 @@ def _data_path(session_dir: str) -> str:
     return os.path.join(session_dir, "data.bin")
 
 
+def _progress_path(session_dir: str) -> str:
+    return os.path.join(session_dir, "progress.json")
+
+
 def _read_meta(session_dir: str) -> dict | None:
     try:
         with open(_meta_path(session_dir)) as fh:
@@ -176,11 +180,37 @@ def finalize_session(user_sub: str, session_id: str) -> tuple[int, int, str, str
     return fd, meta["total_size"], meta["filename"], meta["folder"]
 
 
+def write_finalize_progress(user_sub: str, session_id: str, uploaded_bytes: int, total_bytes: int) -> None:
+    """Called from the (potentially many-minute-long) step that reads the
+    fully-assembled file back off disk and uploads it to Google Drive --
+    the browser has nothing left to send at this point, so without this
+    the UI has no way to show it's still working rather than stuck. Never
+    lets a write failure interrupt the actual upload it's reporting on."""
+    session_dir = _session_dir(user_sub, session_id)
+    tmp_path = _progress_path(session_dir) + ".tmp"
+    try:
+        with open(tmp_path, "w") as fh:
+            json.dump({"uploaded_bytes": uploaded_bytes, "total_bytes": total_bytes}, fh)
+        os.replace(tmp_path, _progress_path(session_dir))
+    except OSError:
+        pass  # session dir may already be gone (e.g. cleaned up mid-flight) -- nothing to report to
+
+
+def read_finalize_progress(user_sub: str, session_id: str) -> dict | None:
+    session_dir = _session_dir(user_sub, session_id)
+    try:
+        with open(_progress_path(session_dir)) as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
 def cleanup_session(user_sub: str, session_id: str) -> None:
     session_dir = _session_dir(user_sub, session_id)
     data_path = _data_path(session_dir)
     meta_path = _meta_path(session_dir)
-    for path in (data_path, meta_path, meta_path + ".tmp"):
+    progress_path = _progress_path(session_dir)
+    for path in (data_path, meta_path, meta_path + ".tmp", progress_path, progress_path + ".tmp"):
         try:
             os.remove(path)
         except FileNotFoundError:

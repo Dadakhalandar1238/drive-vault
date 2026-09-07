@@ -237,5 +237,93 @@ def test_upload_from_fd_large_chunk_uses_resumable_upload_with_bounded_chunksize
     assert isinstance(captured["fileobj"], drive_client_module._FdRangeReader)
 
 
+def test_upload_from_fd_large_chunk_passes_num_retries_to_next_chunk(tmp_content, monkeypatch):
+    """Real bug: a 2.99GB upload is ~375 individual chunk requests to
+    Drive in a row -- without num_retries, a single transient network
+    blip anywhere in that sequence kills the entire upload. Confirms the
+    fix actually asks googleapiclient's own retry/backoff to handle it."""
+    fd, _content, _ = tmp_content
+    client = _client_with_mocked_service()
+
+    fake_request = MagicMock()
+    fake_request.next_chunk.return_value = (None, {"id": "big-file-id"})
+    client._service.files.return_value.create.return_value = fake_request
+
+    import app.drive_client as drive_client_module
+
+    monkeypatch.setattr(drive_client_module, "MediaIoBaseUpload", lambda *a, **k: MagicMock())
+
+    large_length = SIMPLE_UPLOAD_THRESHOLD + 1
+    client.upload_from_fd("big.bin", fd, offset=0, length=large_length)
+
+    fake_request.next_chunk.assert_called_once_with(num_retries=drive_client_module.DRIVE_UPLOAD_RETRIES)
+
+
+def test_download_to_fd_passes_num_retries_to_next_chunk(monkeypatch):
+    client = _client_with_mocked_service()
+    client._service.files.return_value.get_media.return_value = MagicMock()
+
+    import app.drive_client as drive_client_module
+
+    fake_downloader = MagicMock()
+    fake_downloader.next_chunk.return_value = (None, True)
+    monkeypatch.setattr(drive_client_module, "MediaIoBaseDownload", lambda *a, **k: fake_downloader)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    try:
+        dest_fd = os.open(tmp.name, os.O_WRONLY)
+        try:
+            client.download_to_fd("file-id", dest_fd)
+        finally:
+            os.close(dest_fd)
+    finally:
+        os.unlink(tmp.name)
+
+    fake_downloader.next_chunk.assert_called_once_with(num_retries=drive_client_module.DRIVE_UPLOAD_RETRIES)
+
+
+def test_upload_from_fd_reports_progress_across_multiple_chunks(tmp_content, monkeypatch):
+    """The other half of the "stuck at 100%" fix: the browser polls for
+    real progress while a large file is being uploaded to Drive, fed by
+    this callback -- confirms it fires with the real cumulative byte
+    count googleapiclient reports after each chunk, and once more at the
+    very end so the UI always reaches 100% for real."""
+    fd, _content, _ = tmp_content
+    client = _client_with_mocked_service()
+
+    large_length = SIMPLE_UPLOAD_THRESHOLD + 1
+
+    class FakeStatus:
+        def __init__(self, resumable_progress):
+            self.resumable_progress = resumable_progress
+
+    fake_request = MagicMock()
+    fake_request.next_chunk.side_effect = [
+        (FakeStatus(1000), None),
+        (FakeStatus(large_length), {"id": "big-file-id"}),
+    ]
+    client._service.files.return_value.create.return_value = fake_request
+
+    import app.drive_client as drive_client_module
+
+    monkeypatch.setattr(drive_client_module, "MediaIoBaseUpload", lambda *a, **k: MagicMock())
+
+    seen = []
+    file_id = client.upload_from_fd("big.bin", fd, offset=0, length=large_length, progress_cb=seen.append)
+
+    assert file_id == "big-file-id"
+    assert seen == [1000, large_length, large_length]  # per-chunk reports, then a final full-size report
+
+
+def test_upload_from_fd_small_chunk_reports_progress_once_done(tmp_content):
+    fd, _content, _ = tmp_content
+    client = _client_with_mocked_service()
+    client._service.files.return_value.create.return_value.execute.return_value = {"id": "abc123"}
+
+    seen = []
+    client.upload_from_fd("small.txt", fd, offset=0, length=30, progress_cb=seen.append)
+    assert seen == [30]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

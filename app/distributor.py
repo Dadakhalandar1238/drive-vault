@@ -26,6 +26,8 @@ never holds more than one chunk's transfer buffer in memory either.
 from __future__ import annotations
 
 import tempfile
+import threading
+from typing import Callable
 
 from .drive_client import DriveClient
 from .workers import parallel_dict, parallel_map
@@ -74,13 +76,23 @@ def plan_chunks(free_space: dict[str, int], size: int) -> list[tuple[str, int, i
     return plan
 
 
-def upload_many(clients: dict[str, DriveClient], payloads: list[tuple[str, int, int]]) -> dict[str, list[dict]]:
+def upload_many(
+    clients: dict[str, DriveClient],
+    payloads: list[tuple[str, int, int]],
+    progress_cb: Callable[[str, int], None] | None = None,
+) -> dict[str, list[dict]]:
     """
     payloads: [(filename, fd, size), ...] -- fd is an open, readable file
     descriptor (e.g. an UploadFile's own .file.fileno(), which Starlette
     has already spooled to a real temp file on disk for anything past a
     small in-memory threshold) positioned at the start of that file's
     content; size is its total byte length.
+
+    progress_cb, if given, is called as progress_cb(filename,
+    cumulative_bytes_uploaded) as chunks land -- a large file split
+    across several drives uploads those splits concurrently, so this
+    combines their progress into one running total per filename rather
+    than the caller having to track per-drive splits itself.
 
     Returns {filename: [chunk_record, ...]} once every chunk of every
     file has been uploaded. Never reads a whole file into memory -- see
@@ -100,13 +112,28 @@ def upload_many(clients: dict[str, DriveClient], payloads: list[tuple[str, int, 
         for (acct, offset, chunk_size) in file_plans[filename]
     ]
 
+    progress_lock = threading.Lock()
+    uploaded_by_file: dict[str, int] = {filename: 0 for filename, _fd, _size in payloads}
+
     def do_task(task):
         filename, acct, offset, chunk_size = task
         is_split = len(file_plans[filename]) > 1
         chunk_name = f"{filename}.part{offset}" if is_split else filename
+
+        task_progress_cb = None
+        if progress_cb is not None:
+            last_reported = [0]
+
+            def task_progress_cb(bytes_done_for_this_task: int) -> None:
+                delta = bytes_done_for_this_task - last_reported[0]
+                last_reported[0] = bytes_done_for_this_task
+                with progress_lock:
+                    uploaded_by_file[filename] += delta
+                    progress_cb(filename, uploaded_by_file[filename])
+
         # fresh_copy(): two chunks from different files can land on the
         # same drive and run concurrently -- each needs its own connection.
-        file_id = clients[acct].fresh_copy().upload_from_fd(chunk_name, fds[filename], offset, chunk_size)
+        file_id = clients[acct].fresh_copy().upload_from_fd(chunk_name, fds[filename], offset, chunk_size, progress_cb=task_progress_cb)
         return filename, {"account": acct, "file_id": file_id, "offset": offset, "size": chunk_size}
 
     grouped: dict[str, list[dict]] = {filename: [] for filename, _fd, _size in payloads}

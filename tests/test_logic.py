@@ -120,13 +120,15 @@ def test_upload_many_never_reads_more_than_its_planned_chunk_size():
         def fresh_copy(self):
             return self
 
-        def upload_from_fd(self, name, fd, offset, length):
+        def upload_from_fd(self, name, fd, offset, length, progress_cb=None):
             # The real assertion: distributor never materializes bytes
             # itself -- it only ever passes through the (fd, offset,
             # length) triple. We read it back ourselves here purely to
             # verify correctness of the plan, the same way a real upload
             # would read exactly this range and nothing more.
             seen_ranges[name] = os.pread(fd, length, offset)
+            if progress_cb:
+                progress_cb(length)
             return f"fake-id-{name}"
 
         def get_free_space(self):
@@ -150,6 +152,77 @@ def test_upload_many_never_reads_more_than_its_planned_chunk_size():
     ordered = sorted(chunks, key=lambda c: c["offset"])
     reassembled = b"".join(seen_ranges[f"photo.jpg.part{c['offset']}"] for c in ordered)
     assert reassembled == content
+
+
+def test_upload_many_progress_cb_reports_cumulative_bytes_per_file():
+    """Feeds the /upload/status polling endpoint -- a large file split
+    across several drives uploads those splits concurrently, so this
+    confirms upload_many combines their individual progress reports into
+    one running total per filename rather than the caller seeing
+    per-split numbers that don't add up to the whole file."""
+    content = os.urandom(2000)
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp.write(content)
+    tmp.flush()
+    fd = os.open(tmp.name, os.O_RDONLY)
+
+    class FakeClient:
+        def fresh_copy(self):
+            return self
+
+        def upload_from_fd(self, name, fd, offset, length, progress_cb=None):
+            if progress_cb:
+                progress_cb(length // 2)
+                progress_cb(length)  # two reports per split, like a real multi-chunk resumable upload
+            return f"fake-id-{name}"
+
+        def get_free_space(self):
+            return 1200  # too small alone (2000-byte file), but two combined cover it
+
+    reports = []
+    clients = {"drive-a": FakeClient(), "drive-b": FakeClient()}
+    try:
+        result = distributor.upload_many(clients, [("photo.jpg", fd, len(content))], progress_cb=lambda name, total: reports.append((name, total)))
+    finally:
+        os.close(fd)
+        os.unlink(tmp.name)
+
+    chunks = result["photo.jpg"]
+    assert len(chunks) == 2  # confirms it actually split
+    assert all(name == "photo.jpg" for name, _ in reports)
+    # Final report must equal the whole file's size, not just one split's.
+    assert reports[-1][1] == len(content)
+    # Every reported total is monotonically non-decreasing.
+    totals = [total for _, total in reports]
+    assert totals == sorted(totals)
+
+
+def test_upload_many_without_progress_cb_does_not_require_one():
+    """progress_cb is optional -- existing callers (and the fake clients
+    in other tests) that don't pass one must keep working unchanged."""
+    content = b"x" * 100
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp.write(content)
+    tmp.flush()
+    fd = os.open(tmp.name, os.O_RDONLY)
+
+    class FakeClient:
+        def fresh_copy(self):
+            return self
+
+        def upload_from_fd(self, name, fd, offset, length, progress_cb=None):
+            assert progress_cb is None
+            return "fake-id"
+
+        def get_free_space(self):
+            return 1000
+
+    try:
+        result = distributor.upload_many({"drive-a": FakeClient()}, [("f.txt", fd, len(content))])
+    finally:
+        os.close(fd)
+        os.unlink(tmp.name)
+    assert result["f.txt"][0]["file_id"] == "fake-id"
 
 
 if __name__ == "__main__":

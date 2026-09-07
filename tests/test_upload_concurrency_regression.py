@@ -31,7 +31,7 @@ class FakeDriveClient:
         # mirror that here so upload_many exercises the real code path.
         return FakeDriveClient(self.name, self._shared_state)
 
-    def upload_from_fd(self, name, fd, offset, length):
+    def upload_from_fd(self, name, fd, offset, length, progress_cb=None):
         my_id = id(self)
         state = self._shared_state
         with state["lock"]:

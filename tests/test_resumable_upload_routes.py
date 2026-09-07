@@ -41,10 +41,12 @@ class RecordingFakeDriveClient:
     def get_free_space(self):
         return 100 * GB
 
-    def upload_from_fd(self, name, fd, offset, length):
+    def upload_from_fd(self, name, fd, offset, length, progress_cb=None):
         self._next_id += 1
         file_id = f"fake-id-{self._next_id}"
         RecordingFakeDriveClient.store[file_id] = os.pread(fd, length, offset)
+        if progress_cb:
+            progress_cb(length)
         return file_id
 
     def delete_file(self, file_id):
@@ -57,6 +59,33 @@ class NoSpaceFakeDriveClient:
 
     def get_free_space(self):
         return 0  # nothing fits, ever
+
+
+class FailsOnceThenSucceedsFakeDriveClient:
+    """Simulates a real-world transient failure during the upload-to-Drive
+    step (a network blip, a Drive API 5xx, ...) that outlasts
+    googleapiclient's own internal retries -- the first attempt raises,
+    a later retry (after the client clicks Resume) succeeds without
+    needing to resend any chunk bytes."""
+
+    store = {}
+    calls = 0
+
+    def fresh_copy(self):
+        return self
+
+    def get_free_space(self):
+        return 100 * GB
+
+    def upload_from_fd(self, name, fd, offset, length, progress_cb=None):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            raise ConnectionError("simulated transient network failure")
+        file_id = f"fake-id-{type(self).calls}"
+        type(self).store[file_id] = os.pread(fd, length, offset)
+        if progress_cb:
+            progress_cb(length)
+        return file_id
 
 
 @pytest.fixture(autouse=True)
@@ -241,6 +270,88 @@ def test_upload_complete_preserves_session_when_no_drive_has_room(monkeypatch):
     status = client.post("/upload/init", json={"session_id": sid, "filename": "f.bin", "folder": "", "total_size": 10, "chunk_size": 10}).json()
     assert status["received_chunks"] == 1
     assert status["total_chunks"] == 1
+
+
+def test_upload_complete_survives_a_transient_drive_failure_and_resume_succeeds(monkeypatch):
+    """Real production bug: a 2.99GB upload finished sending every chunk
+    (100% client-side) but the server-side upload-to-Drive step then
+    failed and the file never appeared -- because any exception other
+    than ValueError was previously uncaught, leaking the fd and giving
+    the client an opaque 500 with no clean way to retry. Confirms the
+    fix: a transient failure here returns a clean, retryable error, the
+    session survives it, and clicking Resume (re-calling /upload/init
+    then /upload/complete, exactly like the real JS does) succeeds
+    without resending any chunk bytes."""
+    v = {"accounts": {"sub-primary": {"email": "me@example.com", "label": "Drive 1 (primary)", "primary": True}}, "folders": [], "files": {}}
+    FailsOnceThenSucceedsFakeDriveClient.calls = 0
+    FailsOnceThenSucceedsFakeDriveClient.store = {}
+    clients = {"sub-primary": FailsOnceThenSucceedsFakeDriveClient()}
+    monkeypatch.setattr(main, "build_clients_and_vault", lambda sess: (clients, v))
+    monkeypatch.setattr(vault, "save_vault", lambda client, vv: None)
+
+    client = TestClient(app=main.app)
+    cookie = session.create_session_cookie("sub-primary", "me@example.com", "fake-refresh-token", "test-client-id", "test-client-secret")
+    client.cookies.set(config.SESSION_COOKIE_NAME, cookie)
+
+    sid = new_session_id()
+    content = os.urandom(3000)
+    client.post("/upload/init", json={"session_id": sid, "filename": "movie.mp4", "folder": "", "total_size": len(content), "chunk_size": 3000})
+    client.post("/upload/chunk", data={"session_id": sid, "chunk_index": "0"}, files={"chunk": ("c", content, "application/octet-stream")})
+
+    resp = client.post("/upload/complete", json={"session_id": sid})
+    assert resp.status_code == 502
+    assert "resume" in resp.json()["detail"].lower() or "retry" in resp.json()["detail"].lower()
+
+    # The session must have survived -- resuming reports every chunk
+    # already received, not a reset back to zero.
+    status = client.post("/upload/init", json={"session_id": sid, "filename": "movie.mp4", "folder": "", "total_size": len(content), "chunk_size": 3000}).json()
+    assert status["received_chunks"] == 1
+    assert status["total_chunks"] == 1
+
+    resp = client.post("/upload/complete", json={"session_id": sid})
+    assert resp.status_code == 200
+
+    file_id = v["files"]["movie.mp4"]["chunks"][0]["file_id"]
+    assert FailsOnceThenSucceedsFakeDriveClient.store[file_id] == content
+
+
+def test_upload_status_reports_progress_written_during_finalize(env):
+    client, v = env
+    sid = new_session_id()
+    client.post("/upload/init", json={"session_id": sid, "filename": "f.bin", "folder": "", "total_size": 10, "chunk_size": 10})
+
+    # Nothing reported yet.
+    resp = client.get(f"/upload/status?session_id={sid}")
+    assert resp.status_code == 200
+    assert resp.json() == {"uploaded_bytes": 0, "total_bytes": 0}
+
+    upload_sessions.write_finalize_progress("sub-primary", sid, 4, 10)
+    resp = client.get(f"/upload/status?session_id={sid}")
+    assert resp.json() == {"uploaded_bytes": 4, "total_bytes": 10}
+
+
+def test_upload_complete_wires_real_progress_through_to_upload_sessions(env, monkeypatch):
+    """Confirms the plumbing end to end: /upload/complete passes a
+    progress_cb all the way down to the DriveClient, and whatever it
+    reports lands in upload_sessions' finalize-progress file (what
+    /upload/status reads) -- not just that /upload/complete succeeds."""
+    client, v = env
+    sid = new_session_id()
+    content = os.urandom(3000)
+    client.post("/upload/init", json={"session_id": sid, "filename": "movie.mp4", "folder": "", "total_size": len(content), "chunk_size": 3000})
+    client.post("/upload/chunk", data={"session_id": sid, "chunk_index": "0"}, files={"chunk": ("c", content, "application/octet-stream")})
+
+    seen_progress = []
+    original_write = upload_sessions.write_finalize_progress
+
+    def spying_write(user_sub, session_id, uploaded_bytes, total_bytes):
+        seen_progress.append((uploaded_bytes, total_bytes))
+        original_write(user_sub, session_id, uploaded_bytes, total_bytes)
+
+    monkeypatch.setattr(main.upload_sessions, "write_finalize_progress", spying_write)
+    resp = client.post("/upload/complete", json={"session_id": sid})
+    assert resp.status_code == 200
+    assert seen_progress == [(len(content), len(content))]
 
 
 if __name__ == "__main__":

@@ -443,7 +443,13 @@ def upload_complete(request: Request, payload: dict = Body(...)):
     """Called once the browser has sent every chunk. Hands the now
     fully-assembled file off to the exact same distributor pipeline a
     direct upload always used -- chunked-to-the-server and
-    chunked-across-drives are two independent, unrelated splits."""
+    chunked-across-drives are two independent, unrelated splits.
+
+    For a large file this is the step that actually uploads to Google
+    Drive (the browser has nothing left to send at this point), which
+    can take several more minutes -- /upload/status reports live
+    progress for it so the UI isn't just frozen at 100% the whole time.
+    """
     sess = require_session(request)
     clients, v = build_clients_and_vault(sess)
     session_id = payload["session_id"]
@@ -454,17 +460,33 @@ def upload_complete(request: Request, payload: dict = Body(...)):
         raise HTTPException(409, str(e))
 
     key = f"{folder}/{filename}" if folder else filename
-    try:
-        grouped_chunks = distributor.upload_many(clients, [(key, fd, size)])
-    except ValueError as e:
-        # Not enough space across connected drives right now -- the
-        # assembled upload is left in place so retrying just this step
-        # (after freeing space, or connecting another drive) doesn't
-        # require resending the file's bytes.
-        os.close(fd)
-        raise HTTPException(400, str(e))
 
-    os.close(fd)
+    def progress_cb(_filename: str, uploaded_bytes: int) -> None:
+        upload_sessions.write_finalize_progress(sess["sub"], session_id, uploaded_bytes, size)
+
+    try:
+        try:
+            grouped_chunks = distributor.upload_many(clients, [(key, fd, size)], progress_cb=progress_cb)
+        except ValueError as e:
+            # Not enough space across connected drives right now -- the
+            # assembled upload is left in place (session NOT cleaned up)
+            # so retrying just this step (after freeing space, or
+            # connecting another drive) doesn't require resending the
+            # file's bytes.
+            raise HTTPException(400, str(e))
+        except Exception:
+            # Anything else (a Drive API error, a network failure that
+            # outlasted the retries, ...) -- previously this was
+            # uncaught, which leaked this fd and returned an opaque 500
+            # the client had no clean way to recover from. The session
+            # is left in place here too: every chunk is still safely on
+            # disk, so clicking Resume just retries this upload-to-Drive
+            # step, not the whole file transfer.
+            logger.exception("Upload to Drive failed while finalizing session=%s key=%s", session_id, key)
+            raise HTTPException(502, "Uploading to Google Drive failed -- your data is safe, click Resume to retry.")
+    finally:
+        os.close(fd)
+
     # Distribution to Drive succeeded -- clean up now rather than after
     # the vault save below, so a later retry (if that save somehow
     # fails) can't re-upload the same file's bytes a second time.
@@ -474,6 +496,18 @@ def upload_complete(request: Request, payload: dict = Body(...)):
     primary_client = clients[sess["sub"]]
     vault.save_vault(primary_client, v)
     return {"status": "ok", "key": key, "folder": folder}
+
+
+@app.get("/upload/status")
+def upload_status(request: Request, session_id: str):
+    """Polled by the browser while /upload/complete is in flight, so a
+    large file's upload-to-Drive phase can show real progress instead of
+    sitting at a static 100% for however many minutes that takes."""
+    sess = require_session(request)
+    progress = upload_sessions.read_finalize_progress(sess["sub"], session_id)
+    if progress is None:
+        return {"uploaded_bytes": 0, "total_bytes": 0}
+    return progress
 
 
 @app.get("/download/{filename:path}")

@@ -33,6 +33,14 @@ TRANSFER_CHUNK_SIZE = 8 * 1024 * 1024
 # round trip to pay for.
 SIMPLE_UPLOAD_THRESHOLD = TRANSFER_CHUNK_SIZE
 
+# A large file is hundreds of individual chunk requests in a row (a
+# 3GB upload at 8MB/chunk is ~375 of them) -- over that many round
+# trips, hitting at least one transient network blip or Google-side 5xx
+# is common, not exceptional. Without retrying, that single blip kills
+# the whole multi-minute upload. googleapiclient's own num_retries
+# handles exponential backoff for exactly this class of error.
+DRIVE_UPLOAD_RETRIES = 5
+
 
 class _FdRangeReader:
     """A read-only, seekable view over the byte range [offset, offset +
@@ -205,7 +213,7 @@ class DriveClient:
     # which is always small JSON), these never hold more than
     # TRANSFER_CHUNK_SIZE of file content in memory at once, no matter how
     # large the file or chunk is -- see the module docstring constants.
-    def upload_from_fd(self, name: str, fd: int, offset: int, length: int, mime_type: str = "application/octet-stream") -> str:
+    def upload_from_fd(self, name: str, fd: int, offset: int, length: int, mime_type: str = "application/octet-stream", progress_cb=None) -> str:
         if length <= SIMPLE_UPLOAD_THRESHOLD:
             # Small enough that a plain single-shot upload is both simpler
             # and faster than paying for a resumable session's extra round
@@ -213,12 +221,25 @@ class DriveClient:
             data = os.pread(fd, length, offset)
             media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type, resumable=False)
             file = self._service.files().create(body={"name": name}, media_body=media, fields="id").execute()
+            if progress_cb:
+                progress_cb(length)
         else:
             media = MediaIoBaseUpload(_FdRangeReader(fd, offset, length), mimetype=mime_type, resumable=True, chunksize=TRANSFER_CHUNK_SIZE)
             request = self._service.files().create(body={"name": name}, media_body=media, fields="id")
             response = None
             while response is None:
-                _, response = request.next_chunk()
+                # num_retries: a real multi-GB upload is hundreds of these
+                # chunk requests in a row -- without this, a single
+                # transient blip (a dropped packet, a brief network stall,
+                # a 5xx from Google) partway through kills the entire
+                # upload, forcing a full retry of everything already sent
+                # to Drive. googleapiclient retries with exponential
+                # backoff internally for exactly this class of error.
+                status, response = request.next_chunk(num_retries=DRIVE_UPLOAD_RETRIES)
+                if progress_cb and status is not None:
+                    progress_cb(int(status.resumable_progress))
+            if progress_cb:
+                progress_cb(length)
             file = response
         self._touch_cache()
         return file["id"]
@@ -228,7 +249,7 @@ class DriveClient:
         downloader = MediaIoBaseDownload(_FdOffsetWriter(dest_fd, dest_offset), request, chunksize=TRANSFER_CHUNK_SIZE)
         done = False
         while not done:
-            _, done = downloader.next_chunk()
+            _, done = downloader.next_chunk(num_retries=DRIVE_UPLOAD_RETRIES)
         self._touch_cache()
 
     def delete_file(self, file_id: str) -> None:

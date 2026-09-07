@@ -144,6 +144,29 @@ def test_stale_abandoned_sessions_are_swept_on_next_init(monkeypatch):
     assert upload_sessions._read_meta(session_dir) is None
 
 
+def test_finalize_progress_round_trips():
+    upload_sessions.init_session("user-1", "sess-a", "movie.mp4", "videos", total_size=100, chunk_size=10)
+    assert upload_sessions.read_finalize_progress("user-1", "sess-a") is None  # nothing reported yet
+
+    upload_sessions.write_finalize_progress("user-1", "sess-a", 40, 100)
+    assert upload_sessions.read_finalize_progress("user-1", "sess-a") == {"uploaded_bytes": 40, "total_bytes": 100}
+
+    # A later write overwrites, it doesn't accumulate a history.
+    upload_sessions.write_finalize_progress("user-1", "sess-a", 90, 100)
+    assert upload_sessions.read_finalize_progress("user-1", "sess-a") == {"uploaded_bytes": 90, "total_bytes": 100}
+
+
+def test_read_finalize_progress_for_unknown_session_returns_none():
+    assert upload_sessions.read_finalize_progress("user-1", "no-such-session") is None
+
+
+def test_cleanup_session_also_removes_finalize_progress():
+    upload_sessions.init_session("user-1", "sess-a", "movie.mp4", "videos", total_size=10, chunk_size=10)
+    upload_sessions.write_finalize_progress("user-1", "sess-a", 5, 10)
+    upload_sessions.cleanup_session("user-1", "sess-a")
+    assert upload_sessions.read_finalize_progress("user-1", "sess-a") is None
+
+
 def test_rejects_unsafe_session_id():
     with pytest.raises(ValueError):
         upload_sessions.init_session("user-1", "../../etc", "x", "", total_size=10, chunk_size=10)
