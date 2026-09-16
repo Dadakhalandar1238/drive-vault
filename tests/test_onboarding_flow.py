@@ -43,6 +43,41 @@ def test_welcome_page_shows_error_banner_for_auth_failure(client):
     assert "double check" in resp.text.lower() or "client secret" in resp.text.lower()
 
 
+def test_welcome_page_shows_error_banner_for_expired_session(client):
+    resp = client.get("/?error=session_expired")
+    assert "sign in again" in resp.text.lower()
+
+
+def test_expired_refresh_token_redirects_to_sign_in_instead_of_crashing(client, monkeypatch):
+    """Real production bug: an OAuth consent screen still in Google's
+    Testing mode has its refresh tokens auto-expired by Google after
+    about 7 days, regardless of use. That surfaced as an unhandled
+    RefreshError deep inside a Drive API call, crashing /dashboard with
+    a raw 500. Confirms the global exception handler instead treats it
+    like any other expired session: redirect to sign-in and clear both
+    cookies, so a stale refresh token can't strand the user on a broken
+    page or keep silently failing on every future request."""
+    from google.auth.exceptions import RefreshError
+
+    def boom(sess):
+        raise RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    monkeypatch.setattr(main, "build_clients_and_vault", boom)
+
+    cookie = session.create_session_cookie("sub-1", "me@example.com", "stale-refresh-token", "cid", "csecret")
+    client.cookies.set(config.SESSION_COOKIE_NAME, cookie)
+    remember_cookie = session.create_remember_cookie("sub-1", "me@example.com", "cid", "csecret", "stale-refresh-token")
+    client.cookies.set(config.REMEMBER_COOKIE_NAME, remember_cookie)
+
+    resp = client.get("/dashboard", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/?error=session_expired"
+
+    set_cookie_headers = resp.headers.get_list("set-cookie")
+    assert any(h.startswith(f'{config.SESSION_COOKIE_NAME}=""') and "Max-Age=0" in h for h in set_cookie_headers)
+    assert any(h.startswith(f'{config.REMEMBER_COOKIE_NAME}=""') and "Max-Age=0" in h for h in set_cookie_headers)
+
+
 def test_index_redirects_to_dashboard_when_session_already_valid(client, monkeypatch):
     monkeypatch.setattr(main, "build_clients_and_vault", lambda sess: ({}, {"accounts": {}, "folders": [], "files": {}}))
     cookie = session.create_session_cookie("sub-1", "me@example.com", "rt", "cid", "csecret")

@@ -8,6 +8,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from google.auth.exceptions import RefreshError
 from starlette.background import BackgroundTask
 
 from . import auth, config, distributor, oauth_state, session, upload_sessions, vault
@@ -78,7 +79,25 @@ def build_clients_and_vault(sess: dict) -> tuple[dict[str, DriveClient], dict]:
 _ERROR_MESSAGES = {
     "setup_expired": "Your setup session expired after 15 minutes of inactivity -- please fill in your Client ID and Client Secret again below.",
     "auth_failed": "Google couldn't complete sign-in with those credentials -- double check your Client ID and Client Secret (typos are the most common cause) and try again.",
+    "session_expired": "Your Google sign-in expired -- please sign in again. (While your OAuth consent screen is still in Google's Testing mode, Google automatically expires access after about a week; publishing it removes that limit.)",
 }
+
+
+@app.exception_handler(RefreshError)
+def handle_expired_refresh_token(request: Request, exc: RefreshError):
+    """Google rejects a stale/revoked refresh token (invalid_grant) with
+    this exception from deep inside any Drive API call -- most commonly
+    because the OAuth consent screen is still in Testing mode, where
+    Google auto-expires tokens after about 7 days regardless of use.
+    Without this handler it surfaces as an unhandled 500 on whatever
+    route happened to trigger a token refresh. Treated the same as an
+    expired session: clear both cookies and send the user back to sign
+    in again, rather than a raw crash."""
+    logger.info("Refresh token rejected by Google (expired or revoked) -- redirecting to sign-in.")
+    resp = RedirectResponse("/?error=session_expired", status_code=303)
+    resp.delete_cookie(config.SESSION_COOKIE_NAME)
+    resp.delete_cookie(config.REMEMBER_COOKIE_NAME)
+    return resp
 
 
 @app.get("/", response_class=HTMLResponse)
